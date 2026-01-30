@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>运维数据面板</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="page-header">
+        <div>
+          <h1>运维数据面板</h1>
+          <p class="subtitle">账单与 AI/非AI 用量概览（Supabase）</p>
+        </div>
+        <div class="header-actions">
+          <button id="refreshButton" class="primary">刷新</button>
+        </div>
+      </header>
+
+      <nav class="tab-bar">
+        <button class="tab active" data-tab="overview">运维页面</button>
+        <button class="tab" data-tab="fetch">数据获取</button>
+      </nav>
+
+      <section class="card">
+        <div class="section-header">
+          <h2>查询范围</h2>
+          <span id="rangeHint" class="muted"></span>
+        </div>
+        <div class="range-controls">
+          <label>
+            开始日期
+            <input type="date" id="startDate" />
+          </label>
+          <label>
+            结束日期
+            <input type="date" id="endDate" />
+          </label>
+          <button id="applyRange" class="secondary">应用</button>
+        </div>
+      </section>
+
+      <section id="tab-overview" class="tab-panel active">
+        <section class="grid two">
+        <div class="card">
+          <div class="section-header">
+            <h2>阿里云账单（按日汇总）</h2>
+            <span id="billStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="billTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">原始金额</div>
+              <div class="value" id="billGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠金额</div>
+              <div class="value" id="billDiscountTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">AI 金额</div>
+              <div class="value" id="billAi">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">非 AI 金额</div>
+              <div class="value" id="billNonAi">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="billRows">-</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>产品编码</th>
+                  <th>产品名称</th>
+                  <th>是否 AI</th>
+                  <th class="right">原始金额</th>
+                  <th class="right">优惠金额</th>
+                  <th class="right">优惠后金额</th>
+                </tr>
+              </thead>
+              <tbody id="billProductTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-header">
+            <h2>亚马逊账单（按日汇总）</h2>
+            <span id="awsOverviewStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="awsOverviewTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="awsOverviewGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="awsOverviewRows">-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-header">
+            <h2>火山引擎账单（按日汇总）</h2>
+            <span id="volcOverviewStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="volcOverviewTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="volcOverviewGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="volcOverviewRows">-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-header">
+            <h2>天眼查账单（按日汇总）</h2>
+            <span id="tianOverviewStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="tianOverviewTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="tianOverviewGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="tianOverviewRows">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">AI 标记</div>
+              <div class="value"><span class="tag tag-nonai">非 AI</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-header">
+            <h2>月之暗面账单（按日汇总）</h2>
+            <span id="moonshotOverviewStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="moonshotOverviewTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="moonshotOverviewGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="moonshotOverviewRows">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">AI 标记</div>
+              <div class="value"><span class="tag tag-ai">AI</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-header">
+            <h2>Authing 账单（按月汇总）</h2>
+            <span id="authingOverviewStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">月费</div>
+              <div class="value" id="authingOverviewTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录月数</div>
+              <div class="value" id="authingOverviewRows">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">AI 标记</div>
+              <div class="value"><span class="tag tag-nonai">非 AI</span></div>
+            </div>
+            <div class="kpi">
+              <div class="label">备注</div>
+              <div class="value" style="font-size:12px;">固定月费 ¥99</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-header">
+            <h2>TextIn 账单（按日汇总）</h2>
+            <span id="textinOverviewStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="textinOverviewTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="textinOverviewGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="textinOverviewRows">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">AI 标记</div>
+              <div class="value"><span class="tag tag-nonai">非 AI</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-header">
+            <h2>AI Token 用量（按供应商汇总）</h2>
+            <span id="tokenStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">总 Token</div>
+              <div class="value" id="tokenTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">供应商数</div>
+              <div class="value" id="tokenVendorCount">-</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>供应商</th>
+                  <th class="right">Token 总量</th>
+                </tr>
+              </thead>
+              <tbody id="tokenTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>系统状态</h2>
+          </div>
+          <div class="status-grid">
+            <div>
+              <div class="label">最近刷新</div>
+              <div class="value" id="lastRefresh">-</div>
+            </div>
+            <div>
+              <div class="label">错误信息</div>
+              <div class="value error" id="errorBox">无</div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="tab-fetch" class="tab-panel">
+        <section class="card">
+          <div class="section-header">
+            <h2>数据获取说明</h2>
+          </div>
+          <p class="muted">
+            本页用于展示各供应商数据的入库结果与明细。数据抓取由服务器定时任务完成，
+            页面仅做监控与核对，天眼查数据统一标记为非 AI。
+          </p>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>阿里云接口获取（Token 日汇总）</h2>
+            <span id="aliyunTokenStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">总 Token</div>
+              <div class="value" id="aliyunTokenTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="aliyunTokenRows">-</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>项目</th>
+                  <th class="right">Token 总量</th>
+                </tr>
+              </thead>
+              <tbody id="aliyunTokenTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>亚马逊接口获取（账单日汇总）</h2>
+            <span id="awsBillStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="awsBillTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="awsBillGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="awsBillRows">-</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>是否 AI</th>
+                  <th class="right">优惠后金额</th>
+                  <th class="right">优惠前金额</th>
+                  <th>币种</th>
+                </tr>
+              </thead>
+              <tbody id="awsBillTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>火山引擎接口获取（账单日汇总）</h2>
+            <span id="volcBillStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="volcBillTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="volcBillGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="volcBillRows">-</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>是否 AI</th>
+                  <th class="right">优惠后金额</th>
+                  <th class="right">优惠前金额</th>
+                  <th>币种</th>
+                </tr>
+              </thead>
+              <tbody id="volcBillTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>天眼查接口获取（账单日汇总）</h2>
+            <span id="tianBillStatus" class="muted">等待加载</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">优惠后金额</div>
+              <div class="value" id="tianBillTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">优惠前金额</div>
+              <div class="value" id="tianBillGrossTotal">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">记录数</div>
+              <div class="value" id="tianBillRows">-</div>
+            </div>
+            <div class="kpi">
+              <div class="label">AI 标记</div>
+              <div class="value"><span class="tag tag-nonai">非 AI</span></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>是否 AI</th>
+                  <th class="right">优惠后金额</th>
+                  <th class="right">优惠前金额</th>
+                  <th>币种</th>
+                </tr>
+              </thead>
+              <tbody id="tianBillTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="./config.js?v=4"></script>
+    <script src="./app.js?v=4"></script>
+  </body>
+</html>
