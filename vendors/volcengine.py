@@ -179,11 +179,35 @@ def fetch_volcengine_bill_daily(
 
     amount_total = 0.0
     gross_total = 0.0
+    ai_amount_total = 0.0
+    ai_gross_total = 0.0
+    non_ai_amount_total = 0.0
+    non_ai_gross_total = 0.0
     currencies = set()
     token_total = 0
     token_input = 0
     token_output = 0
     token_rows = []
+
+    # AI 产品关键词（火山引擎）
+    AI_KEYWORDS = ["豆包", "doubao", "llm", "大模型", "语言模型", "token", "智能"]
+
+    def is_ai_item(item):
+        """判断是否是 AI 产品"""
+        # 检查单位是否包含 token
+        unit = (item.get("Unit") or "").lower()
+        if "token" in unit:
+            return True
+        # 检查产品名称/元素名称是否包含 AI 关键词
+        element = (item.get("Element") or "").lower()
+        product = (item.get("Product") or "").lower()
+        expand = (item.get("ExpandField") or "").lower()
+        instance = (item.get("InstanceName") or "").lower()
+        for keyword in AI_KEYWORDS:
+            kw = keyword.lower()
+            if kw in element or kw in product or kw in expand or kw in instance:
+                return True
+        return False
 
     for item in rows:
         gross = _safe_float(item.get("OriginalBillAmount"))
@@ -197,6 +221,14 @@ def fetch_volcengine_bill_daily(
         currency = item.get("Currency")
         if currency:
             currencies.add(currency)
+
+        # 判断是否 AI 产品
+        if is_ai_item(item):
+            ai_amount_total += amount
+            ai_gross_total += gross
+        else:
+            non_ai_amount_total += amount
+            non_ai_gross_total += gross
 
         # 提取 Token 用量
         unit_raw = item.get("Unit") or ""
@@ -233,6 +265,10 @@ def fetch_volcengine_bill_daily(
     summary = {
         "amount": _normalize_amount(amount_total),
         "gross": _normalize_amount(gross_total),
+        "ai_amount": _normalize_amount(ai_amount_total),
+        "ai_gross": _normalize_amount(ai_gross_total),
+        "non_ai_amount": _normalize_amount(non_ai_amount_total),
+        "non_ai_gross": _normalize_amount(non_ai_gross_total),
         "currency": currency,
         "rows": len(rows),
         "total": total if isinstance(total, int) else None,

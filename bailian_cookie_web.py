@@ -53,10 +53,60 @@ TEXTIN_API = os.getenv(
     "TEXTIN_BILL_URL",
     "https://web-api.textin.com/user/finance/consume",
 )
+DEEPSEEK_COST_API = os.getenv(
+    "DEEPSEEK_COST_URL",
+    "https://platform.deepseek.com/api/v0/usage/cost",
+)
+DEEPSEEK_AMOUNT_API = os.getenv(
+    "DEEPSEEK_AMOUNT_URL",
+    "https://platform.deepseek.com/api/v0/usage/amount",
+)
 
 # 加载本地 .env（若存在），方便读取配置
 if load_dotenv:
     load_dotenv()
+
+# 执行控制状态（按 session_id 独立管理）
+_exec_sessions = {}
+_exec_lock = threading.Lock()
+
+def _get_session(session_id: str) -> dict:
+    """获取或创建 session 状态"""
+    with _exec_lock:
+        if session_id not in _exec_sessions:
+            _exec_sessions[session_id] = {"paused": False, "stopped": False}
+        return _exec_sessions[session_id]
+
+def _reset_exec_state(session_id: str):
+    with _exec_lock:
+        if session_id in _exec_sessions:
+            _exec_sessions[session_id] = {"paused": False, "stopped": False}
+
+def _cleanup_session(session_id: str):
+    """清理已完成的 session"""
+    with _exec_lock:
+        if session_id in _exec_sessions:
+            del _exec_sessions[session_id]
+
+def _is_paused(session_id: str) -> bool:
+    with _exec_lock:
+        session = _exec_sessions.get(session_id, {})
+        return session.get("paused", False)
+
+def _is_stopped(session_id: str) -> bool:
+    with _exec_lock:
+        session = _exec_sessions.get(session_id, {})
+        return session.get("stopped", False)
+
+def _set_paused(session_id: str, val: bool):
+    with _exec_lock:
+        if session_id in _exec_sessions:
+            _exec_sessions[session_id]["paused"] = val
+
+def _set_stopped(session_id: str, val: bool):
+    with _exec_lock:
+        if session_id in _exec_sessions:
+            _exec_sessions[session_id]["stopped"] = val
 
 def yesterday_bj() -> str:
     return (datetime.now(tz=BJ) - timedelta(days=1)).date().isoformat()
@@ -78,129 +128,127 @@ def render_form(default_start: str, default_end: str) -> str:
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>数据拉取</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; padding: 24px; max-width: 900px; margin: 0 auto; }}
-    label {{ display: block; margin-top: 14px; font-weight: 600; }}
-    input, textarea, select {{ width: 100%; padding: 8px; box-sizing: border-box; }}
-    textarea {{ height: 140px; font-family: monospace; }}
-    button {{ margin-top: 16px; padding: 10px 16px; }}
-    .hint {{ color: #555; font-size: 12px; }}
-    .warn {{ color: #a00; font-size: 12px; }}
-  </style>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>数据拉取工具</title>
+<style>
+:root{{--primary:#4f46e5;--primary-hover:#4338ca;--success:#10b981;--gray-50:#f9fafb;--gray-100:#f3f4f6;--gray-200:#e5e7eb;--gray-300:#d1d5db;--gray-500:#6b7280;--gray-600:#4b5563;--gray-700:#374151;--gray-800:#1f2937;--gray-900:#111827;--radius:8px;--shadow:0 1px 3px rgba(0,0,0,.1)}}
+*{{box-sizing:border-box}}body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--gray-100);margin:0;padding:20px;min-height:100vh}}
+.container{{max-width:800px;margin:0 auto}}.header{{text-align:center;margin-bottom:24px}}.header h1{{font-size:24px;color:var(--gray-900);margin:0 0 8px}}.header p{{color:var(--gray-500);margin:0;font-size:14px}}
+.tabs{{display:flex;gap:4px;background:var(--gray-200);padding:4px;border-radius:var(--radius);margin-bottom:20px}}.tab{{flex:1;padding:10px 16px;border:none;background:0 0;font-size:14px;font-weight:500;color:var(--gray-600);cursor:pointer;border-radius:6px;transition:all .2s}}.tab:hover{{color:var(--gray-900)}}.tab.active{{background:#fff;color:var(--primary);box-shadow:var(--shadow)}}
+.card{{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;margin-bottom:20px}}.vendor-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.vendor-item{{position:relative}}.vendor-item input[type=radio]{{position:absolute;opacity:0}}.vendor-item label{{display:block;padding:16px;border:2px solid var(--gray-200);border-radius:var(--radius);cursor:pointer;transition:all .2s}}.vendor-item label:hover{{border-color:var(--gray-300);background:var(--gray-50)}}.vendor-item input:checked+label{{border-color:var(--primary);background:#eef2ff}}.vendor-name{{font-weight:600;color:var(--gray-800);margin-bottom:4px}}.vendor-desc{{font-size:12px;color:var(--gray-500)}}.vendor-tag{{display:inline-block;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:500}}.tag-ai{{background:#dbeafe;color:#1d4ed8}}.tag-non-ai{{background:#fef3c7;color:#92400e}}
+.form-section{{display:none;margin-top:20px}}.form-section.active{{display:block}}.form-group{{margin-bottom:16px}}.form-group label{{display:block;font-size:14px;font-weight:500;color:var(--gray-700);margin-bottom:6px}}.form-group input[type=text],.form-group input[type=date],.form-group textarea{{width:100%;padding:10px 12px;border:1px solid var(--gray-300);border-radius:6px;font-size:14px;transition:border-color .2s}}.form-group input:focus,.form-group textarea:focus{{outline:0;border-color:var(--primary)}}.form-group textarea{{height:100px;font-family:monospace;font-size:13px;resize:vertical}}.form-hint{{font-size:12px;color:var(--gray-500);margin-top:4px}}.date-row{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}.btn-row{{display:flex;gap:12px;margin-top:24px}}.btn{{padding:12px 24px;border:none;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;transition:all .2s}}.btn-primary{{background:var(--primary);color:#fff;flex:1}}.btn-primary:hover{{background:var(--primary-hover)}}.btn-secondary{{background:var(--gray-100);color:var(--gray-700)}}.btn-secondary:hover{{background:var(--gray-200)}}.checkbox-group{{display:flex;align-items:center;gap:8px}}.checkbox-group input{{width:16px;height:16px}}.env-info{{background:var(--gray-50);border:1px solid var(--gray-200);border-radius:6px;padding:12px;margin-top:12px;font-size:12px;color:var(--gray-600)}}.env-info code{{background:var(--gray-200);padding:1px 4px;border-radius:3px;font-size:11px}}.hidden{{display:none!important}}
+.exec-header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}}.exec-header h3{{margin:0;font-size:16px}}.exec-controls{{display:flex;gap:8px}}.btn-ctrl{{padding:8px 16px;font-size:12px;background:var(--gray-100);color:var(--gray-700)}}.btn-ctrl:hover{{background:var(--gray-200)}}.btn-ctrl:disabled{{opacity:0.5;cursor:not-allowed}}.btn-danger{{padding:8px 16px;font-size:12px;background:#ef4444;color:#fff}}.btn-danger:hover{{background:#dc2626}}
+.progress-bar{{height:8px;background:var(--gray-200);border-radius:4px;overflow:hidden;margin-bottom:12px}}.progress-fill{{height:100%;background:var(--primary);width:0%;transition:width 0.3s}}
+.exec-status{{display:flex;justify-content:space-between;font-size:14px;color:var(--gray-600);margin-bottom:12px}}
+.exec-log{{background:var(--gray-900);color:#10b981;padding:16px;border-radius:6px;font-family:monospace;font-size:12px;max-height:300px;overflow-y:auto;white-space:pre-wrap}}
+</style>
 </head>
 <body>
-  <h2>用量拉取（临时 Cookie）</h2>
-  <p class="warn">Cookie 仅本次请求使用，不会落库或写日志。建议仅在内网使用。</p>
-  <p class="hint">
-    百炼依赖环境变量：ALIYUN_BAILIAN_WORKSPACE_ID / ALIYUN_BAILIAN_REGION / ALIYUN_BAILIAN_USAGE_URL
-    （可选：ALIYUN_BAILIAN_SEC_TOKEN / ALIYUN_BAILIAN_CSRF_TOKEN）
-  </p>
-  <p class="hint">
-    阶跃星辰依赖环境变量：STEPFUN_OASIS_APPID / STEPFUN_OASIS_WEBID
-    （可选：STEPFUN_OASIS_PLATFORM / STEPFUN_PROJECT_ID / STEPFUN_COST_KEYS / STEPFUN_COST_CURRENCY）
-  </p>
-  <p class="hint">
-    阿里云账单依赖环境变量：ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET
-  </p>
-  <p class="hint">
-    AWS 账单依赖环境变量：AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-    （可选：AWS_SESSION_TOKEN / AWS_REGION / AWS_DEFAULT_REGION）
-  </p>
-  <p class="hint">
-    火山引擎账单依赖环境变量：VOLCENGINE_ACCESS_KEY / VOLCENGINE_SECRET_KEY
-    （可选：VOLCENGINE_REGION / VOLCENGINE_BILLING_URL）
-  </p>
-  <p class="hint">
-    天眼查账单依赖环境变量：TIANYANCHA_AUTH_SECRET
-    （可选：TIANYANCHA_BILL_URL / TIANYANCHA_COOKIE）
-  </p>
-  <p class="hint">
-    月之暗面账单（Web 接口）依赖：Bearer Token / 组织 ID / Cookie
-    （环境变量：MOONSHOT_BEARER_TOKEN / MOONSHOT_ORG_ID / MOONSHOT_COOKIE）
-  </p>
-  <form method="post" action="/fetch">
-    <label>供应商（必选）</label>
-    <select name="vendor" required>
-      <option value="bailian" selected>阿里云百炼（Token）</option>
-      <option value="stepfun">阶跃星辰（Token + 消费金额）</option>
-      <option value="aliyun_bill">阿里云账单金额（日粒度）</option>
-      <option value="aws_bill">亚马逊账单金额（日粒度）</option>
-      <option value="volcengine_bill">火山引擎账单金额（日粒度）</option>
-      <option value="tianyancha_bill">天眼查账单金额（日粒度，非 AI）</option>
-      <option value="moonshot_bill">月之暗面账单金额（日粒度，Web 接口）</option>
-      <option value="textin_bill">TextIn 账单金额（日粒度，非 AI）</option>
-    </select>
-
-    <label>Cookie（百炼/阶跃必填）</label>
-    <textarea name="cookie" placeholder="粘贴完整 Cookie"></textarea>
-
-    <label>天眼查 authSecret（天眼查必填）</label>
-    <input type="text" name="auth_secret" placeholder="可留空，默认读取 TIANYANCHA_AUTH_SECRET" />
-
-    <label>天眼查 Cookie（可选，提示“请先登录”时填写）</label>
-    <textarea name="tian_cookie" placeholder="粘贴天眼查 Cookie（可留空，默认读取 TIANYANCHA_COOKIE）"></textarea>
-
-    <label>月之暗面 Bearer Token（月之暗面必填）</label>
-    <input type="text" name="moonshot_token" placeholder="从浏览器开发者工具复制 authorization 头的 Bearer 值" />
-
-    <label>月之暗面组织 ID（月之暗面必填）</label>
-    <input type="text" name="moonshot_org_id" placeholder="如 org-xxx，从 URL 参数 oid 获取" />
-
-    <label>月之暗面 Cookie（月之暗面必填）</label>
-    <textarea name="moonshot_cookie" placeholder="粘贴月之暗面 Cookie"></textarea>
-
-    <label>TextIn Token（TextIn 必填）</label>
-    <input type="text" name="textin_token" placeholder="如 76233542bd52608ed869d8c98d402ea8" />
-
-    <label>
-      <input type="checkbox" name="aws_dump_raw" value="1" checked />
-      AWS 输出完整返回（仅亚马逊）
-    </label>
-
-    <label>开始日期（必填）</label>
-    <input type="date" name="start_day" value="{html.escape(default_start)}" required />
-
-    <label>结束日期（必填）</label>
-    <input type="date" name="end_day" value="{html.escape(default_end)}" required />
-
-    <button type="submit">开始拉取并入库</button>
-    <button type="submit" name="retry_day" value="1">只重拉开始日期</button>
-  </form>
-</body>
-</html>
+<div class="container">
+<div class="header"><h1>数据拉取工具</h1><p>选择供应商，填写信息后一键入库</p></div>
+<div class="tabs"><button type="button" class="tab active" data-tab="cookie">需要 Cookie</button><button type="button" class="tab" data-tab="api">API 密钥</button></div>
+<form method="post" action="/fetch" id="fetchForm"><input type="hidden" name="vendor" id="vendorInput" value="bailian"/>
+<div class="card" id="panel-cookie"><div class="vendor-grid">
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_bailian" value="bailian" checked/><label for="v_bailian"><div class="vendor-name">阿里云百炼<span class="vendor-tag tag-ai">AI</span></div><div class="vendor-desc">Token 用量</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_stepfun" value="stepfun"/><label for="v_stepfun"><div class="vendor-name">阶跃星辰<span class="vendor-tag tag-ai">AI</span></div><div class="vendor-desc">Token+金额</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_moonshot" value="moonshot_bill"/><label for="v_moonshot"><div class="vendor-name">月之暗面<span class="vendor-tag tag-ai">AI</span></div><div class="vendor-desc">日粒度账单</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_textin" value="textin_bill"/><label for="v_textin"><div class="vendor-name">TextIn<span class="vendor-tag tag-non-ai">非AI</span></div><div class="vendor-desc">OCR消费</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_tianyancha" value="tianyancha_bill"/><label for="v_tianyancha"><div class="vendor-name">天眼查<span class="vendor-tag tag-non-ai">非AI</span></div><div class="vendor-desc">API账单</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_deepseek" value="deepseek"/><label for="v_deepseek"><div class="vendor-name">DeepSeek<span class="vendor-tag tag-ai">AI</span></div><div class="vendor-desc">消费+Token</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_dmxapi_manual" value="dmxapi_manual"/><label for="v_dmxapi_manual"><div class="vendor-name">DMXAPI<span class="vendor-tag tag-ai">AI</span></div><div class="vendor-desc">手动录入周Token</div></label></div>
+</div>
+<div class="form-section" id="form_bailian"><div class="form-group"><label>百炼 Cookie *</label><textarea name="cookie" placeholder="从浏览器复制"></textarea></div><div class="env-info">需要: <code>ALIYUN_BAILIAN_WORKSPACE_ID</code> <code>ALIYUN_BAILIAN_REGION</code> <code>ALIYUN_BAILIAN_USAGE_URL</code></div></div>
+<div class="form-section" id="form_stepfun"><div class="form-group"><label>阶跃星辰 Cookie *</label><textarea name="stepfun_cookie" placeholder="从浏览器复制"></textarea></div><div class="env-info">需要: <code>STEPFUN_OASIS_APPID</code> <code>STEPFUN_OASIS_WEBID</code></div></div>
+<div class="form-section" id="form_moonshot_bill"><div class="form-group"><label>Bearer Token *</label><input type="text" name="moonshot_token" placeholder="从authorization头复制"/></div><div class="form-group"><label>组织 ID *</label><input type="text" name="moonshot_org_id" placeholder="如 org-xxx"/></div><div class="form-group"><label>Cookie</label><textarea name="moonshot_cookie" placeholder="可选"></textarea></div></div>
+<div class="form-section" id="form_textin_bill"><div class="form-group"><label>TextIn Token *</label><input type="text" name="textin_token" placeholder="如 76233542..."/></div></div>
+<div class="form-section" id="form_tianyancha_bill"><div class="form-group"><label>authSecret *</label><input type="text" name="auth_secret" placeholder="70669ae1-06d8-..."/></div><div class="form-group"><label>Cookie *</label><textarea name="tian_cookie" placeholder="从 open.tianyancha.com 复制（必填）"></textarea></div><div class="form-hint">从浏览器开发者工具复制 Cookie，用于验证登录状态</div></div>
+<div class="form-section" id="form_deepseek"><div class="form-group"><label>Authorization Token *</label><input type="text" name="deepseek_auth" placeholder="从浏览器开发者工具复制 authorization 头的值"/></div><div class="form-group"><label>Cookie</label><textarea name="deepseek_cookie" placeholder="可选，从浏览器复制"></textarea></div><div class="form-hint">从 platform.deepseek.com 控制台网络请求中复制，同时获取消费和Token数据</div></div>
+<div class="form-section" id="form_dmxapi_manual"><div class="form-group"><label>周开始日期 *</label><input type="date" name="dmx_week_start"/></div><div class="form-group"><label>周结束日期 *</label><input type="date" name="dmx_week_end"/></div><div class="form-group"><label>Input Tokens *</label><input type="number" name="dmx_input_tokens" placeholder="输入Token数"/></div><div class="form-group"><label>Output Tokens *</label><input type="number" name="dmx_output_tokens" placeholder="输出Token数"/></div><div class="form-group"><label>消耗金额 ($)</label><input type="number" name="dmx_amount" step="0.01" placeholder="消耗金额（美元）"/></div><div class="form-hint">手动录入周汇总数据，直接写入 llm_token_weekly_summary</div></div>
+</div>
+<div class="card hidden" id="panel-api"><div class="vendor-grid">
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_aliyun_bill" value="aliyun_bill"/><label for="v_aliyun_bill"><div class="vendor-name">阿里云账单<span class="vendor-tag tag-ai">含AI</span></div><div class="vendor-desc">BSS API</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_aws_bill" value="aws_bill"/><label for="v_aws_bill"><div class="vendor-name">亚马逊 AWS<span class="vendor-tag tag-non-ai">非AI</span></div><div class="vendor-desc">Cost Explorer</div></label></div>
+<div class="vendor-item"><input type="radio" name="vendor_select" id="v_volcengine" value="volcengine_bill"/><label for="v_volcengine"><div class="vendor-name">火山引擎<span class="vendor-tag tag-ai">含AI</span></div><div class="vendor-desc">账单+Token</div></label></div>
+</div>
+<div class="form-section" id="form_aliyun_bill"><div class="env-info">需要: <code>ALIYUN_ACCESS_KEY_ID</code> <code>ALIYUN_ACCESS_KEY_SECRET</code></div></div>
+<div class="form-section" id="form_aws_bill"><div class="checkbox-group"><input type="checkbox" name="aws_dump_raw" value="1" id="aws_dump_raw" checked/><label for="aws_dump_raw">输出原始返回</label></div><div class="env-info">需要: <code>AWS_ACCESS_KEY_ID</code> <code>AWS_SECRET_ACCESS_KEY</code></div></div>
+<div class="form-section" id="form_volcengine_bill"><div class="env-info">需要: <code>VOLCENGINE_ACCESS_KEY</code> <code>VOLCENGINE_SECRET_KEY</code></div></div>
+</div>
+<div class="card" id="dateCard"><div class="date-row"><div class="form-group"><label>开始日期 *</label><input type="date" name="start_day" value="{html.escape(default_start)}" required/></div><div class="form-group"><label>结束日期 *</label><input type="date" name="end_day" value="{html.escape(default_end)}" required/></div></div><div class="form-hint">数据将按天入库</div></div>
+<div class="btn-row"><button type="button" class="btn btn-primary" id="btnStart">开始拉取并入库</button><button type="button" id="btnRetry" class="btn btn-secondary">只拉开始日</button></div>
+</form>
+<div class="card" id="execPanel" style="display:none;">
+<div class="exec-header"><h3>执行状态</h3><div class="exec-controls"><button type="button" class="btn btn-ctrl" id="btnPause">暂停</button><button type="button" class="btn btn-ctrl" id="btnResume" disabled>继续</button><button type="button" class="btn btn-danger" id="btnStop">停止</button></div></div>
+<div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+<div class="exec-status"><span id="statusText">准备中...</span><span id="progressText">0/0</span></div>
+<div class="exec-log" id="execLog"></div>
+</div>
+</div>
+<script>
+const tabs=document.querySelectorAll('.tab'),cookiePanel=document.getElementById('panel-cookie'),apiPanel=document.getElementById('panel-api'),vendorInput=document.getElementById('vendorInput'),radios=document.querySelectorAll('input[name="vendor_select"]'),formSections=document.querySelectorAll('.form-section');
+const execPanel=document.getElementById('execPanel'),btnStart=document.getElementById('btnStart'),btnRetry=document.getElementById('btnRetry'),btnPause=document.getElementById('btnPause'),btnResume=document.getElementById('btnResume'),btnStop=document.getElementById('btnStop');
+const progressFill=document.getElementById('progressFill'),statusText=document.getElementById('statusText'),progressText=document.getElementById('progressText'),execLog=document.getElementById('execLog');
+let eventSource=null,isPaused=false,currentSessionId=null;
+function genSessionId(){{return 'sess_'+Date.now()+'_'+Math.random().toString(36).substr(2,9);}}
+tabs.forEach(tab=>{{tab.addEventListener('click',()=>{{tabs.forEach(t=>t.classList.remove('active'));tab.classList.add('active');if(tab.dataset.tab==='cookie'){{cookiePanel.classList.remove('hidden');apiPanel.classList.add('hidden');document.getElementById('v_bailian').checked=true;updateFormSection('bailian');}}else{{cookiePanel.classList.add('hidden');apiPanel.classList.remove('hidden');document.getElementById('v_aliyun_bill').checked=true;updateFormSection('aliyun_bill');}}}});}});
+radios.forEach(radio=>{{radio.addEventListener('change',()=>updateFormSection(radio.value));}});
+function updateFormSection(vendor){{vendorInput.value=vendor;formSections.forEach(sec=>sec.classList.remove('active'));const target=document.getElementById('form_'+vendor);if(target)target.classList.add('active');const dateCard=document.getElementById('dateCard');if(dateCard)dateCard.style.display=(vendor==='dmxapi_manual')?'none':'block';}}
+updateFormSection('bailian');
+function addLog(msg){{execLog.textContent+=msg+'\\n';execLog.scrollTop=execLog.scrollHeight;}}
+function startFetch(retryOnly){{
+  const form=document.getElementById('fetchForm');const formData=new FormData(form);
+  if(retryOnly)formData.append('retry_day','1');
+  currentSessionId=genSessionId();formData.append('session_id',currentSessionId);
+  execPanel.style.display='block';execLog.textContent='';progressFill.style.width='0%';statusText.textContent='正在连接...';progressText.textContent='';
+  isPaused=false;btnPause.disabled=false;btnResume.disabled=true;btnStart.disabled=true;btnRetry.disabled=true;btnStop.disabled=false;
+  const params=new URLSearchParams(formData).toString();
+  eventSource=new EventSource('/fetch_stream?'+params);
+  eventSource.onmessage=function(e){{const data=JSON.parse(e.data);
+    if(data.type==='progress'){{progressFill.style.width=data.percent+'%';statusText.textContent=data.status;progressText.textContent=data.current+'/'+data.total;}}
+    else if(data.type==='log'){{addLog(data.message);}}
+    else if(data.type==='done'){{statusText.textContent='完成';btnPause.disabled=true;btnResume.disabled=true;btnStop.disabled=true;btnStart.disabled=false;btnRetry.disabled=false;eventSource.close();}}
+    else if(data.type==='error'){{statusText.textContent='错误: '+data.message;addLog('[ERROR] '+data.message);btnStart.disabled=false;btnRetry.disabled=false;eventSource.close();}}
+    else if(data.type==='paused'){{statusText.textContent='已暂停';}}
+    else if(data.type==='stopped'){{statusText.textContent='已停止';btnStart.disabled=false;btnRetry.disabled=false;eventSource.close();}}
+  }};
+  eventSource.onerror=function(){{statusText.textContent='连接断开';btnStart.disabled=false;btnRetry.disabled=false;eventSource.close();}};
+}}
+btnStart.addEventListener('click',()=>startFetch(false));
+btnRetry.addEventListener('click',()=>startFetch(true));
+btnPause.addEventListener('click',()=>{{if(currentSessionId)fetch('/fetch_control?action=pause&session_id='+currentSessionId);btnPause.disabled=true;btnResume.disabled=false;}});
+btnResume.addEventListener('click',()=>{{if(currentSessionId)fetch('/fetch_control?action=resume&session_id='+currentSessionId);btnPause.disabled=false;btnResume.disabled=true;}});
+btnStop.addEventListener('click',()=>{{if(currentSessionId)fetch('/fetch_control?action=stop&session_id='+currentSessionId);btnPause.disabled=true;btnResume.disabled=true;btnStop.disabled=true;}});
+</script></body></html>
 """
 
 
-def render_result(start_day: str, end_day: str, results: list[dict]) -> str:
-    summary_lines = "\n".join(_render_result_line(item) for item in results)
+
+def render_result(start_day: str, end_day: str, results: list[dict], vendor: str = "") -> str:
+    summary_lines = "".join(_render_result_line(item) for item in results)
     last_raw = results[-1]["raw"] if results else {}
     raw_json = json.dumps(last_raw, ensure_ascii=False, indent=2)
+    total_days = len(results)
+    success_count = sum(1 for r in results if r.get("total_tokens", 0) > 0 or r.get("bill_amount") is not None)
     return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>拉取结果</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; padding: 24px; max-width: 900px; margin: 0 auto; }}
-    pre {{ background: #f6f6f6; padding: 12px; overflow-x: auto; }}
-  </style>
-</head>
-<body>
-  <h2>拉取结果</h2>
-  <p>日期范围：{html.escape(start_day)} ~ {html.escape(end_day)}</p>
-  <ul>
-    {summary_lines}
-  </ul>
-  <p>仅展示最后一天原始返回：</p>
-  <pre>{html.escape(raw_json)}</pre>
-  <p>服务已完成本次入库并即将退出。如需再次拉取，请重新启动脚本。</p>
-</body>
-</html>
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>拉取结果</title>
+<style>
+:root{{--primary:#4f46e5;--success:#10b981;--gray-50:#f9fafb;--gray-100:#f3f4f6;--gray-200:#e5e7eb;--gray-500:#6b7280;--gray-700:#374151;--gray-900:#111827;--radius:8px}}
+*{{box-sizing:border-box}}body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--gray-100);margin:0;padding:20px;min-height:100vh}}
+.container{{max-width:800px;margin:0 auto}}.header{{text-align:center;margin-bottom:24px}}.header h1{{font-size:24px;color:var(--gray-900);margin:0 0 8px}}.card{{background:#fff;border-radius:var(--radius);box-shadow:0 1px 3px rgba(0,0,0,.1);padding:24px;margin-bottom:20px}}
+.stats{{display:flex;gap:20px;margin-bottom:20px}}.stat{{flex:1;text-align:center;padding:16px;background:var(--gray-50);border-radius:var(--radius)}}.stat-value{{font-size:24px;font-weight:700;color:var(--primary)}}.stat-label{{font-size:12px;color:var(--gray-500);margin-top:4px}}
+.result-list{{list-style:none;padding:0;margin:0}}.result-list li{{padding:12px 16px;border-bottom:1px solid var(--gray-100);font-size:14px}}.result-list li:last-child{{border-bottom:none}}
+pre{{background:var(--gray-50);padding:16px;border-radius:var(--radius);overflow-x:auto;font-size:12px;max-height:400px}}
+.btn{{padding:12px 24px;border:none;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;text-decoration:none;display:inline-block}}.btn-primary{{background:var(--primary);color:#fff}}.btn-primary:hover{{opacity:.9}}.btn-row{{display:flex;gap:12px;margin-top:24px}}.success{{color:var(--success)}}.top-bar{{margin-bottom:20px}}
+</style>
+</head><body>
+<div class="container">
+<div class="top-bar"><a href="/" class="btn btn-primary">返回继续拉取</a></div>
+<div class="header"><h1 class="success">拉取完成</h1><p>日期范围：{html.escape(start_day)} ~ {html.escape(end_day)}</p></div>
+<div class="stats"><div class="stat"><div class="stat-value">{total_days}</div><div class="stat-label">总天数</div></div><div class="stat"><div class="stat-value">{success_count}</div><div class="stat-label">成功入库</div></div></div>
+<div class="card"><h3>入库明细</h3><ul class="result-list">{summary_lines}</ul></div>
+<div class="card"><h3>最后一天原始返回</h3><pre>{html.escape(raw_json)}</pre></div>
+</div></body></html>
 """
+
 
 
 def iter_days(start_day: str, end_day: str):
@@ -256,6 +304,26 @@ def upsert_weekly_with_id(sb, vendor: str, week_start: str, week_end: str, token
     )
 
 
+def upsert_bill_weekly(sb, vendor: str, week_start: str, week_end: str, amount: float, is_ai: bool = True, currency: str = "CNY"):
+    """写入周账单汇总表"""
+    row = {
+        "id": stable_bigint(f"bill_week:{vendor}:{week_start}:{week_end}:{is_ai}"),
+        "vendor_code": vendor,
+        "week_start": week_start,
+        "week_end": week_end,
+        "is_ai_cost": is_ai,
+        "amount": amount,
+        "gross_amount": amount,
+        "currency": currency,
+    }
+    return (
+        sb.schema("financial_hub_prod")
+        .table("bill_weekly_summary")
+        .upsert(row, on_conflict="vendor_code,week_start,week_end,is_ai_cost")
+        .execute()
+    )
+
+
 def upsert_monthly_with_id(sb, vendor: str, month: str, token_total: int):
     row = {
         "id": stable_bigint(f"month:{vendor}:{month}"),
@@ -282,6 +350,18 @@ def delete_existing_daily(sb, day_str: str, vendor: str, project_id: str | None)
     if project_id:
         query = query.eq("project_id", project_id)
     return query.execute()
+
+
+def delete_bill_daily_by_vendor(sb, vendor_code: str, billing_date: str):
+    """删除指定 vendor 和日期的所有账单记录（不论 is_ai_cost）"""
+    return (
+        sb.schema("financial_hub_prod")
+        .table("bill_daily_summary")
+        .delete()
+        .eq("vendor_code", vendor_code)
+        .eq("billing_date", billing_date)
+        .execute()
+    )
 
 
 def delete_aliyun_bill_daily(sb, billing_date: str):
@@ -712,8 +792,15 @@ def _fetch_volcengine_bill_daily(
         offset += len(batch)
         if total and isinstance(total, int) and total > 0 and offset >= total:
             break
+    # 火山引擎 AI 产品关键词（产品名或元素名包含这些则为 AI）
+    VOLC_AI_KEYWORDS = {"豆包", "doubao", "模型推理", "大模型", "ark", "maas", "token"}
+    
     amount_total = 0.0
     gross_total = 0.0
+    ai_amount = 0.0
+    ai_gross = 0.0
+    non_ai_amount = 0.0
+    non_ai_gross = 0.0
     currencies = set()
     token_total = 0
     token_input = 0
@@ -731,9 +818,30 @@ def _fetch_volcengine_bill_daily(
         currency = item.get("Currency")
         if currency:
             currencies.add(currency)
-        # 提取 Token 用量
+        
+        # 判断是否为 AI 产品
+        product = (item.get("Product") or "").lower()
+        element = (item.get("Element") or "").lower()
+        expand_field = (item.get("ExpandField") or "").lower()
+        subject_name = (item.get("SubjectName") or "").lower()  # 科目名称
+        instance_name = (item.get("InstanceName") or "").lower()  # 实例名称
         unit_raw = item.get("Unit") or ""
         unit = unit_raw.lower()
+        combined = f"{product} {element} {expand_field} {subject_name} {instance_name} {unit}"
+        is_ai = any(kw in combined for kw in VOLC_AI_KEYWORDS)
+        # 调试：打印第一条账单的所有字段
+        if verbose and amount_total == 0:
+            print(f"[DEBUG] volcengine item keys: {list(item.keys())}")
+            print(f"[DEBUG] Product={item.get('Product')} Element={item.get('Element')} SubjectName={item.get('SubjectName')} Unit={item.get('Unit')}")
+        
+        if is_ai:
+            ai_amount += amount
+            ai_gross += gross
+        else:
+            non_ai_amount += amount
+            non_ai_gross += gross
+        
+        # 提取 Token 用量
         if "token" in unit:
             count = _safe_float(item.get("Count") or 0)
             # 根据单位转换：千tokens 乘 1000，否则直接取值
@@ -743,13 +851,13 @@ def _fetch_volcengine_bill_daily(
             else:
                 tokens = int(count)
             token_total += tokens
-            element = item.get("Element") or ""
-            if "输入" in element or "input" in element.lower():
+            element_name = item.get("Element") or ""
+            if "输入" in element_name or "input" in element_name.lower():
                 token_input += tokens
-            elif "输出" in element or "output" in element.lower():
+            elif "输出" in element_name or "output" in element_name.lower():
                 token_output += tokens
             token_rows.append({
-                "element": element,
+                "element": element_name,
                 "model": item.get("ExpandField") or "",
                 "tokens": tokens,
                 "count": count,
@@ -764,6 +872,10 @@ def _fetch_volcengine_bill_daily(
     summary = {
         "amount": _normalize_amount(amount_total),
         "gross": _normalize_amount(gross_total),
+        "ai_amount": _normalize_amount(ai_amount),
+        "ai_gross": _normalize_amount(ai_gross),
+        "non_ai_amount": _normalize_amount(non_ai_amount),
+        "non_ai_gross": _normalize_amount(non_ai_gross),
         "currency": currency,
         "rows": len(rows),
         "total": total if isinstance(total, int) else None,
@@ -836,10 +948,19 @@ def _fetch_aws_bill_daily(client, billing_date, *, include_raw: bool = False):
     if not net_amount and record_type_net_totals:
         net_amount = float(raw_net_sum)
     usage_amount = record_type_totals.get("Usage", 0.0)
+    tax_amount = record_type_totals.get("Tax", 0.0)
     credit_amount = record_type_totals.get("Credit", 0.0)
-    if usage_amount > 0 and credit_amount < 0:
-        net_amount = usage_amount
-        gross_amount = usage_amount - credit_amount
+    # gross = Usage + Tax (不含 Credit/Discount/Refund)
+    # net = Usage + Tax + Credit (Credit 通常是负数)
+    if record_type_totals:
+        # 包含费用类型：Usage, Tax, Support, Fee 等（排除 Credit, Discount, Refund）
+        excluded_types = {"Credit", "Discount", "Refund"}
+        gross_amount = sum(
+            value for key, value in record_type_totals.items()
+            if key not in excluded_types
+        )
+        # net = 所有类型的总和
+        net_amount = sum(record_type_totals.values())
     summary = {
         "amount": _normalize_amount(net_amount),
         "gross": _normalize_amount(gross_amount),
@@ -849,6 +970,7 @@ def _fetch_aws_bill_daily(client, billing_date, *, include_raw: bool = False):
         "record_type_totals": record_type_totals,
         "record_type_net_totals": record_type_net_totals,
         "usage_amount": usage_amount,
+        "tax_amount": tax_amount,
         "credit_amount": credit_amount,
     }
     if include_raw:
@@ -931,18 +1053,18 @@ def _fetch_moonshot_daily_bills(
 
 def _textin_headers(token: str) -> dict:
     return {
-        "Accept": "application/json",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Cache-Control": "no-cache",
-        "Content-Type": "application/json;charset=UTF-8",
-        "Origin": "https://www.textin.com",
-        "Pragma": "no-cache",
-        "Referer": "https://www.textin.com/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "Token": token,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+        "accept": "application/json",
+        "accept-language": "zh-CN,zh;q=0.9",
+        "cache-control": "no-cache",
+        "content-type": "application/json;charset=UTF-8",
+        "origin": "https://www.textin.com",
+        "pragma": "no-cache",
+        "referer": "https://www.textin.com/",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
+        "token": token,
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
         "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
@@ -975,7 +1097,9 @@ def _fetch_textin_consume(
             "start_time": start_ts,
             "end_time": end_ts,
         }
+        print(f"[DEBUG] textin request: url={TEXTIN_API}, body={body}, token={headers.get('token', '')[:10]}...")
         resp = requests.post(TEXTIN_API, json=body, headers=headers, timeout=20)
+        print(f"[DEBUG] textin response: status={resp.status_code}")
         resp.raise_for_status()
         payload = resp.json()
 
@@ -1024,6 +1148,177 @@ def _aggregate_textin_daily(items: list[dict]) -> dict[str, dict]:
         daily[date_str]["raw"].append(item)
 
     return daily
+
+
+# ==================== DeepSeek ====================
+
+def _deepseek_headers(auth_token: str, cookie: str = None) -> dict:
+    """构建 DeepSeek API 请求头"""
+    token = auth_token.strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    headers = {
+        "accept": "*/*",
+        "authorization": f"Bearer {token}",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
+        "sec-ch-ua-mobile": "?0",
+        "x-app-version": "20240425.0",
+        "Referer": "https://platform.deepseek.com/usage",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    }
+    if cookie:
+        headers["Cookie"] = cookie.strip()
+    return headers
+
+
+def _fetch_deepseek_cost(auth_token: str, year: int, month: int, cookie: str = None) -> dict:
+    """获取 DeepSeek 平台月度消费数据"""
+    headers = _deepseek_headers(auth_token, cookie)
+    params = {"year": year, "month": month}
+    
+    resp = requests.get(DEEPSEEK_COST_API, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
+    
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"DeepSeek API error: code={data.get('code')}, msg={data.get('msg')}")
+    
+    return data
+
+
+def _parse_deepseek_cost(data: dict) -> dict:
+    """解析 DeepSeek 消费数据，返回 {total_cost, currency, models, daily}"""
+    biz_data_list = data.get("data", {}).get("biz_data", [])
+    if not biz_data_list:
+        return {"total_cost": 0.0, "currency": "CNY", "models": {}, "daily": {}}
+    
+    biz_data = biz_data_list[0]
+    currency = biz_data.get("currency", "CNY")
+    
+    total_list = biz_data.get("total", [])
+    models = {}
+    total_cost = 0.0
+    
+    for model_data in total_list:
+        model_name = model_data.get("model", "unknown")
+        usage_list = model_data.get("usage", [])
+        
+        model_cost = {"prompt_cache_hit": 0.0, "prompt_cache_miss": 0.0, "response_token": 0.0}
+        
+        for usage in usage_list:
+            usage_type = usage.get("type", "")
+            amount = _safe_float(usage.get("amount"))
+            
+            if usage_type == "PROMPT_CACHE_HIT_TOKEN":
+                model_cost["prompt_cache_hit"] = amount
+            elif usage_type == "PROMPT_CACHE_MISS_TOKEN":
+                model_cost["prompt_cache_miss"] = amount
+            elif usage_type == "RESPONSE_TOKEN":
+                model_cost["response_token"] = amount
+        
+        model_total = model_cost["prompt_cache_hit"] + model_cost["prompt_cache_miss"] + model_cost["response_token"]
+        model_cost["total"] = round(model_total, 4)
+        models[model_name] = model_cost
+        total_cost += model_total
+    
+    days_list = biz_data.get("days", [])
+    daily = {}
+    
+    for day_data in days_list:
+        date_str = day_data.get("date", "")
+        day_models = day_data.get("data", [])
+        
+        day_cost = 0.0
+        for model_data in day_models:
+            usage_list = model_data.get("usage", [])
+            for usage in usage_list:
+                usage_type = usage.get("type", "")
+                amount = _safe_float(usage.get("amount"))
+                if usage_type in ("PROMPT_CACHE_HIT_TOKEN", "PROMPT_CACHE_MISS_TOKEN", "RESPONSE_TOKEN"):
+                    day_cost += amount
+        
+        daily[date_str] = {"amount": round(day_cost, 4), "gross": round(day_cost, 4), "currency": currency}
+    
+    return {"total_cost": round(total_cost, 4), "currency": currency, "models": models, "daily": daily}
+
+
+def _fetch_deepseek_amount(auth_token: str, year: int, month: int, cookie: str = None) -> dict:
+    """获取 DeepSeek 平台月度 Token 用量数据"""
+    headers = _deepseek_headers(auth_token, cookie)
+    params = {"year": year, "month": month}
+    
+    resp = requests.get(DEEPSEEK_AMOUNT_API, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
+    
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"DeepSeek API error: code={data.get('code')}, msg={data.get('msg')}")
+    
+    return data
+
+
+def _parse_deepseek_amount(data: dict) -> dict:
+    """解析 DeepSeek Token 用量数据，返回 {total_tokens, models, daily}"""
+    biz_data = data.get("data", {}).get("biz_data", {})
+    if not biz_data:
+        return {"total_tokens": 0, "models": {}, "daily": {}}
+    
+    total_list = biz_data.get("total", [])
+    models = {}
+    total_tokens = 0
+    
+    for model_data in total_list:
+        model_name = model_data.get("model", "unknown")
+        usage_list = model_data.get("usage", [])
+        
+        model_tokens = {
+            "prompt_cache_hit": 0,
+            "prompt_cache_miss": 0,
+            "response_token": 0,
+            "request_count": 0
+        }
+        
+        for usage in usage_list:
+            usage_type = usage.get("type", "")
+            amount = int(usage.get("amount", "0") or 0)
+            
+            if usage_type == "PROMPT_CACHE_HIT_TOKEN":
+                model_tokens["prompt_cache_hit"] = amount
+            elif usage_type == "PROMPT_CACHE_MISS_TOKEN":
+                model_tokens["prompt_cache_miss"] = amount
+            elif usage_type == "RESPONSE_TOKEN":
+                model_tokens["response_token"] = amount
+            elif usage_type == "REQUEST":
+                model_tokens["request_count"] = amount
+        
+        model_total = model_tokens["prompt_cache_hit"] + model_tokens["prompt_cache_miss"] + model_tokens["response_token"]
+        model_tokens["total"] = model_total
+        models[model_name] = model_tokens
+        total_tokens += model_total
+    
+    days_list = biz_data.get("days", [])
+    daily = {}
+    
+    for day_data in days_list:
+        date_str = day_data.get("date", "")
+        day_models = day_data.get("data", [])
+        
+        day_tokens = 0
+        day_requests = 0
+        for model_data in day_models:
+            usage_list = model_data.get("usage", [])
+            for usage in usage_list:
+                usage_type = usage.get("type", "")
+                amount = int(usage.get("amount", "0") or 0)
+                if usage_type in ("PROMPT_CACHE_HIT_TOKEN", "PROMPT_CACHE_MISS_TOKEN", "RESPONSE_TOKEN"):
+                    day_tokens += amount
+                elif usage_type == "REQUEST":
+                    day_requests += amount
+        
+        daily[date_str] = {"total_tokens": day_tokens, "request_count": day_requests}
+    
+    return {"total_tokens": total_tokens, "models": models, "daily": daily}
 
 
 def _tianyancha_headers(cookie: str | None = None) -> dict:
@@ -1239,7 +1534,7 @@ def fetch_stepfun_usage(
     page: int = 1,
     page_size: int = 200,
     quota_type: str = "1",
-    merge_by_time: int = 1,
+    merge_by_time: int = 0,
 ):
     headers = {
         "accept": "*/*",
@@ -1320,7 +1615,31 @@ def _sum_stepfun_metrics(records: list[dict]) -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path not in ("/", "/index.html"):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        
+        if path == "/fetch_control":
+            action = (query.get("action") or [""])[0]
+            session_id = (query.get("session_id") or [""])[0]
+            if session_id:
+                if action == "pause":
+                    _set_paused(session_id, True)
+                elif action == "resume":
+                    _set_paused(session_id, False)
+                elif action == "stop":
+                    _set_stopped(session_id, True)
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+            return
+        
+        if path == "/fetch_stream":
+            self._handle_stream(query)
+            return
+        
+        if path not in ("/", "/index.html"):
             self.send_error(404)
             return
         default_day = yesterday_bj()
@@ -1329,6 +1648,719 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("content-type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(page.encode("utf-8"))
+    
+    def _send_sse(self, data: dict):
+        try:
+            msg = f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+            self.wfile.write(msg.encode("utf-8"))
+            self.wfile.flush()
+        except Exception:
+            pass
+    
+    def _handle_stream(self, form: dict):
+        # 获取 session_id 用于独立控制
+        session_id = (form.get("session_id") or [""])[0].strip()
+        if not session_id:
+            session_id = f"sess_{int(time.time() * 1000)}"
+        self._session_id = session_id
+        _get_session(session_id)  # 初始化 session 状态
+        _reset_exec_state(session_id)
+        
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("connection", "keep-alive")
+        self.send_header("access-control-allow-origin", "*")
+        self.end_headers()
+        
+        vendor = (form.get("vendor") or ["bailian"])[0].strip() or "bailian"
+        cookie = (form.get("cookie") or [""])[0].strip()
+        stepfun_cookie = (form.get("stepfun_cookie") or [""])[0].strip()
+        auth_secret = (form.get("auth_secret") or [""])[0].strip()
+        tian_cookie = (form.get("tian_cookie") or [""])[0].strip()
+        moonshot_token = (form.get("moonshot_token") or [""])[0].strip()
+        moonshot_org_id = (form.get("moonshot_org_id") or [""])[0].strip()
+        moonshot_cookie = (form.get("moonshot_cookie") or [""])[0].strip()
+        textin_token = (form.get("textin_token") or [""])[0].strip()
+        # 获取第一个非空的 deepseek_auth 和 deepseek_cookie（因为有两个同名字段）
+        deepseek_auth = next((v.strip() for v in (form.get("deepseek_auth") or []) if v.strip()), "")
+        deepseek_cookie = next((v.strip() for v in (form.get("deepseek_cookie") or []) if v.strip()), "")
+        start_day = (form.get("start_day") or [""])[0].strip()
+        end_day = (form.get("end_day") or [""])[0].strip()
+        retry_day = (form.get("retry_day") or [""])[0].strip()
+        aws_dump_raw = (form.get("aws_dump_raw") or [""])[0].strip() == "1"
+        # DMXAPI 手动录入参数
+        dmx_week_start = (form.get("dmx_week_start") or [""])[0].strip()
+        dmx_week_end = (form.get("dmx_week_end") or [""])[0].strip()
+        dmx_input_tokens = (form.get("dmx_input_tokens") or [""])[0].strip()
+        dmx_output_tokens = (form.get("dmx_output_tokens") or [""])[0].strip()
+        dmx_amount = (form.get("dmx_amount") or [""])[0].strip()
+        
+        # 验证参数
+        if vendor in ("bailian",) and not cookie:
+            self._send_sse({"type": "error", "message": "cookie is required"})
+            return
+        if vendor == "stepfun" and not (stepfun_cookie or cookie):
+            self._send_sse({"type": "error", "message": "stepfun cookie is required"})
+            return
+        if vendor == "tianyancha_bill":
+            auth_secret = auth_secret or os.getenv("TIANYANCHA_AUTH_SECRET", "").strip()
+            if not auth_secret:
+                self._send_sse({"type": "error", "message": "missing authSecret"})
+                return
+            tian_cookie = tian_cookie or os.getenv("TIANYANCHA_COOKIE", "").strip()
+            if not tian_cookie:
+                self._send_sse({"type": "error", "message": "missing Cookie (天眼查需要登录Cookie)"})
+                return
+        if vendor == "moonshot_bill":
+            moonshot_token = moonshot_token or os.getenv("MOONSHOT_BEARER_TOKEN", "").strip()
+            moonshot_org_id = moonshot_org_id or os.getenv("MOONSHOT_ORG_ID", "").strip()
+            moonshot_cookie = moonshot_cookie or os.getenv("MOONSHOT_COOKIE", "").strip()
+            if not moonshot_token or not moonshot_org_id:
+                self._send_sse({"type": "error", "message": "missing moonshot token or org_id"})
+                return
+        if vendor == "textin_bill":
+            textin_token = textin_token or os.getenv("TEXTIN_TOKEN", "").strip()
+            if not textin_token:
+                self._send_sse({"type": "error", "message": "missing TextIn token"})
+                return
+        if vendor == "deepseek":
+            deepseek_auth = deepseek_auth or os.getenv("DEEPSEEK_AUTH_TOKEN", "").strip()
+            if not deepseek_auth:
+                self._send_sse({"type": "error", "message": "missing DeepSeek authorization token"})
+                return
+        if vendor == "dmxapi_manual":
+            if not dmx_week_start or not dmx_week_end:
+                self._send_sse({"type": "error", "message": "周开始/结束日期必填"})
+                return
+            if not dmx_input_tokens and not dmx_output_tokens:
+                self._send_sse({"type": "error", "message": "Token数量必填"})
+                return
+            # DMXAPI 手动录入：直接写入周汇总表，不走日期循环
+            try:
+                sb = supabase_client()
+                input_tokens = int(dmx_input_tokens or 0)
+                output_tokens = int(dmx_output_tokens or 0)
+                total_tokens = input_tokens + output_tokens
+                amount_usd = float(dmx_amount) if dmx_amount else None
+                amount_cny = round(amount_usd * 7, 2) if amount_usd is not None else None  # 美元转人民币
+                self._send_sse({"type": "log", "message": f"[INFO] 写入 DMXAPI 周汇总: {dmx_week_start} ~ {dmx_week_end}"})
+                self._send_sse({"type": "log", "message": f"[INFO] Input: {input_tokens:,} | Output: {output_tokens:,} | Total: {total_tokens:,}"})
+                # 写入 Token 周汇总表
+                upsert_weekly_with_id(sb, "dmxapi", dmx_week_start, dmx_week_end, total_tokens)
+                self._send_sse({"type": "log", "message": "✓ Token 写入成功 (llm_token_weekly_usage)"})
+                # 写入账单周汇总表
+                if amount_cny is not None:
+                    self._send_sse({"type": "log", "message": f"[INFO] 消耗金额: ${amount_usd:.2f} → ¥{amount_cny:.2f}"})
+                    upsert_bill_weekly(sb, "dmxapi", dmx_week_start, dmx_week_end, amount_cny, is_ai=True, currency="CNY")
+                    self._send_sse({"type": "log", "message": "✓ 金额写入成功 (bill_weekly_summary)"})
+                self._send_sse({"type": "done", "results": [{"week_start": dmx_week_start, "week_end": dmx_week_end, "total_tokens": total_tokens, "amount_usd": amount_usd, "amount_cny": amount_cny}]})
+                _cleanup_session(self._session_id)
+            except Exception as exc:
+                self._send_sse({"type": "error", "message": f"写入失败: {exc}"})
+                _cleanup_session(self._session_id)
+            return
+        if not start_day or not end_day:
+            self._send_sse({"type": "error", "message": "start_day/end_day are required"})
+            return
+        
+        sb = supabase_client()
+        write_summary = os.getenv("BAILIAN_WRITE_SUMMARY", "1").strip() == "1"
+        if retry_day == "1":
+            day_list = [start_day]
+        else:
+            day_list = list(iter_days(start_day, end_day))
+        
+        total_days = len(day_list)
+        self._send_sse({"type": "progress", "status": "开始拉取", "current": 0, "total": total_days, "percent": 0})
+        self._send_sse({"type": "log", "message": f"[INFO] 开始拉取 {vendor}，共 {total_days} 天"})
+        
+        # 预处理（部分 vendor 需要预加载数据）
+        bill_client = None
+        bill_models = None
+        aws_client = None
+        volc_ready = False
+        tian_orders = None
+        tian_daily = None
+        deepseek_daily = None
+        deepseek_token_daily = None
+        moonshot_daily = None
+        textin_daily = None
+        stepfun_daily = None
+        
+        try:
+            if vendor == "aliyun_bill":
+                bill_client, bill_models = _aliyun_bss_client()
+            elif vendor == "aws_bill":
+                aws_client = _aws_ce_client()
+            elif vendor == "volcengine_bill":
+                volc_ready = True
+            elif vendor == "moonshot_bill":
+                self._send_sse({"type": "log", "message": "[INFO] 正在获取月之暗面账单数据..."})
+                moonshot_bills = _fetch_moonshot_daily_bills(
+                    moonshot_token, moonshot_org_id, start_day, end_day, cookie=moonshot_cookie or None
+                )
+                moonshot_daily = {}
+                for item in moonshot_bills:
+                    date_str = item.get("date", "")[:10]
+                    recharge_fee = int(item.get("recharge_fee") or 0)
+                    amount = recharge_fee / 100000  # 单位是 1/100000 元
+                    moonshot_daily[date_str] = {
+                        "amount": amount, "gross": amount, "currency": "CNY", "raw": item
+                    }
+                self._send_sse({"type": "log", "message": f"[INFO] 获取到 {len(moonshot_daily)} 天数据"})
+            elif vendor == "textin_bill":
+                self._send_sse({"type": "log", "message": "[INFO] 正在获取 TextIn 消费数据..."})
+                self._send_sse({"type": "log", "message": f"[DEBUG] token={textin_token[:10]}... len={len(textin_token)}"})
+                textin_items = _fetch_textin_consume(textin_token, start_day, end_day)
+                textin_daily = _aggregate_textin_daily(textin_items)
+                self._send_sse({"type": "log", "message": f"[INFO] 获取到 {len(textin_daily)} 天数据"})
+            elif vendor == "tianyancha_bill":
+                self._send_sse({"type": "log", "message": "[INFO] 正在获取天眼查订单列表..."})
+                all_orders = _fetch_tianyancha_orders(auth_secret, start_day, end_day, cookie=tian_cookie or None)
+                tian_daily = _aggregate_tianyancha_daily(all_orders)
+                self._send_sse({"type": "log", "message": f"[INFO] 获取到 {len(all_orders)} 条订单"})
+            elif vendor == "deepseek":
+                # 合并获取消费和Token数据
+                self._send_sse({"type": "log", "message": "[INFO] 正在获取 DeepSeek 数据（消费+Token）..."})
+                self._send_sse({"type": "log", "message": f"[DEBUG] auth={deepseek_auth[:20]}... cookie长度={len(deepseek_cookie or '')}"})
+                start_dt = datetime.fromisoformat(start_day)
+                end_dt = datetime.fromisoformat(end_day)
+                
+                # 1. 获取消费数据
+                self._send_sse({"type": "log", "message": "[INFO] 获取消费数据..."})
+                cost_daily = {}
+                seen_months = set()
+                cur = start_dt
+                while cur <= end_dt:
+                    ym = (cur.year, cur.month)
+                    if ym not in seen_months:
+                        seen_months.add(ym)
+                        self._send_sse({"type": "log", "message": f"[DEBUG] 请求消费 {cur.year}年{cur.month}月..."})
+                        raw_data = _fetch_deepseek_cost(deepseek_auth, cur.year, cur.month, deepseek_cookie)
+                        parsed = _parse_deepseek_cost(raw_data)
+                        for d, info in parsed.get("daily", {}).items():
+                            cost_daily[d] = info
+                    cur += timedelta(days=1)
+                self._send_sse({"type": "log", "message": f"[INFO] 消费数据: {len(cost_daily)} 天"})
+                
+                # 2. 获取Token数据
+                self._send_sse({"type": "log", "message": "[INFO] 获取Token数据..."})
+                token_daily = {}
+                seen_months = set()
+                cur = start_dt
+                while cur <= end_dt:
+                    ym = (cur.year, cur.month)
+                    if ym not in seen_months:
+                        seen_months.add(ym)
+                        self._send_sse({"type": "log", "message": f"[DEBUG] 请求Token {cur.year}年{cur.month}月..."})
+                        raw_data = _fetch_deepseek_amount(deepseek_auth, cur.year, cur.month, deepseek_cookie)
+                        parsed = _parse_deepseek_amount(raw_data)
+                        for d, info in parsed.get("daily", {}).items():
+                            token_daily[d] = info
+                    cur += timedelta(days=1)
+                self._send_sse({"type": "log", "message": f"[INFO] Token数据: {len(token_daily)} 天"})
+                
+                # 3. 直接入库
+                sb = supabase_client()
+                all_days = sorted(set(cost_daily.keys()) | set(token_daily.keys()))
+                for day_str in all_days:
+                    day_date = datetime.fromisoformat(day_str).date()
+                    # 消费入库
+                    cost_info = cost_daily.get(day_str, {})
+                    amount = cost_info.get("amount", 0.0)
+                    gross = cost_info.get("gross", 0.0)
+                    currency = cost_info.get("currency", "CNY")
+                    upsert_bill_daily_summary(sb, "deepseek", day_str, amount, gross, currency, is_ai_cost=True)
+                    
+                    # Token入库
+                    token_info = token_daily.get(day_str, {})
+                    total_tokens = token_info.get("total_tokens", 0)
+                    delete_existing_daily(sb, day_str, "deepseek", None)
+                    row = {
+                        "day": day_str,
+                        "vendor": "deepseek",
+                        "model_id": "total",
+                        "total_tokens": total_tokens,
+                        "remark": "deepseek token usage",
+                    }
+                    insert_daily_row(sb, row)
+                    
+                    self._send_sse({"type": "log", "message": f"✓ {day_str} | Token: {total_tokens:,} | 金额: ¥{amount:.2f}"})
+                
+                # 4. 写入周/月汇总
+                if write_summary:
+                    for day_str in all_days:
+                        day_date = datetime.fromisoformat(day_str).date()
+                        week_start, week_end = week_bounds(day_date)
+                        # Token周/月汇总
+                        weekly = sum_token_daily(sb, "deepseek", week_start.isoformat(), week_end.isoformat())
+                        upsert_weekly_with_id(sb, "deepseek", week_start.isoformat(), week_end.isoformat(), weekly)
+                        month = day_str[:7]
+                        month_start = f"{month}-01"
+                        month_end = (day_date.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+                        monthly = sum_token_daily(sb, "deepseek", month_start, month_end.isoformat())
+                        upsert_monthly_with_id(sb, "deepseek", month, monthly)
+                        # 账单周/月汇总
+                        weekly_bill = sum_bill_daily(sb, "deepseek", True, week_start.isoformat(), week_end.isoformat())
+                        if weekly_bill:
+                            upsert_bill_weekly_summary(sb, "deepseek", week_start.isoformat(), week_end.isoformat(),
+                                                       weekly_bill["amount"], weekly_bill["gross"], weekly_bill["currency"], True)
+                        monthly_bill = sum_bill_daily(sb, "deepseek", True, month_start, month_end.isoformat())
+                        if monthly_bill:
+                            upsert_bill_monthly_summary(sb, "deepseek", month, monthly_bill["amount"], monthly_bill["gross"], monthly_bill["currency"], True)
+                
+                self._send_sse({"type": "log", "message": f"[DONE] 完成，共处理 {len(all_days)} 天"})
+                self._send_sse({"type": "done"})
+                return
+            elif vendor == "stepfun":
+                self._send_sse({"type": "log", "message": "[INFO] 正在获取阶跃星辰 Token 数据..."})
+                if not stepfun_cookie:
+                    raise ValueError("stepfun_cookie is required")
+                # 一次性获取整个日期范围的数据
+                start_dt = datetime.fromisoformat(start_day)
+                end_dt = datetime.fromisoformat(end_day)
+                start_date = start_dt.date()
+                end_date = end_dt.date()
+                # 计算时间戳范围（北京时间）
+                start_ms = int(datetime(start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=BJ).timestamp() * 1000)
+                end_ms = int(datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, 999999, tzinfo=BJ).timestamp() * 1000)
+                # 获取所有数据（可能需要分页）
+                all_records = []
+                page = 1
+                while True:
+                    raw = fetch_stepfun_usage(stepfun_cookie, start_ms, end_ms, page=page, page_size=200)
+                    records = raw.get("records") or []
+                    all_records.extend(records)
+                    total = int(raw.get("total") or 0)
+                    if len(all_records) >= total or not records:
+                        break
+                    page += 1
+                self._send_sse({"type": "log", "message": f"[INFO] 获取到 {len(all_records)} 条记录"})
+                # 按日期聚合
+                stepfun_daily = {}
+                for r in all_records:
+                    from_ts = int(r.get("fromTime") or 0) / 1000
+                    day_str = datetime.fromtimestamp(from_ts, tz=BJ).strftime("%Y-%m-%d")
+                    if day_str not in stepfun_daily:
+                        stepfun_daily[day_str] = {"input": 0, "output": 0, "tokens": 0, "cost": 0.0, "cache": 0}
+                    stepfun_daily[day_str]["input"] += int(r.get("inAmount") or 0)
+                    stepfun_daily[day_str]["output"] += int(r.get("outAmount") or 0)
+                    stepfun_daily[day_str]["tokens"] += int(r.get("amount") or 0)
+                    stepfun_daily[day_str]["cache"] += int(r.get("cacheAmount") or 0)
+                    # cost=充值扣减, totalCost=消费金额，单位都是毫（1/10000 元）
+                    cost_hao = int(r.get("cost") or 0) + int(r.get("totalCost") or 0)
+                    stepfun_daily[day_str]["cost"] += cost_hao / 10000
+                self._send_sse({"type": "log", "message": f"[INFO] 聚合为 {len(stepfun_daily)} 天数据"})
+                # 直接入库并打印
+                sb = supabase_client()
+                for day_str in sorted(stepfun_daily.keys()):
+                    day_data = stepfun_daily[day_str]
+                    total_tokens = day_data["tokens"] or (day_data["input"] + day_data["output"])
+                    total_cost = day_data["cost"]
+                    delete_existing_daily(sb, day_str, "stepfun", None)
+                    row = {
+                        "day": day_str,
+                        "vendor": "stepfun",
+                        "model_id": "total",
+                        "total_tokens": total_tokens,
+                    }
+                    insert_daily_row(sb, row)
+                    self._send_sse({"type": "log", "message": f"✓ {day_str} | Token: {total_tokens:,} | 金额: ¥{total_cost:.2f}"})
+                # 写入周/月汇总
+                if write_summary:
+                    for day_str in stepfun_daily.keys():
+                        day_date = datetime.fromisoformat(day_str).date()
+                        week_start, week_end = week_bounds(day_date)
+                        weekly = sum_token_daily(sb, "stepfun", week_start.isoformat(), week_end.isoformat())
+                        upsert_weekly_with_id(sb, "stepfun", week_start.isoformat(), week_end.isoformat(), weekly)
+                        month = day_str[:7]
+                        month_start = f"{month}-01"
+                        month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                        monthly = sum_token_daily(sb, "stepfun", month_start, month_end.isoformat())
+                        upsert_monthly_with_id(sb, "stepfun", month, monthly)
+                self._send_sse({"type": "log", "message": f"[DONE] 完成，共处理 {len(stepfun_daily)} 天"})
+                self._send_sse({"type": "done"})
+                return
+        except Exception as exc:
+            self._send_sse({"type": "error", "message": f"预处理失败: {exc}"})
+            return
+        
+        results = []
+        for idx, day in enumerate(day_list):
+            # 检查停止
+            if _is_stopped(self._session_id):
+                self._send_sse({"type": "stopped"})
+                _cleanup_session(self._session_id)
+                return
+            # 检查暂停
+            while _is_paused(self._session_id):
+                self._send_sse({"type": "paused"})
+                time.sleep(0.5)
+                if _is_stopped(self._session_id):
+                    self._send_sse({"type": "stopped"})
+                    _cleanup_session(self._session_id)
+                    return
+            
+            percent = int((idx + 1) / total_days * 100)
+            self._send_sse({"type": "progress", "status": f"正在处理 {day}", "current": idx + 1, "total": total_days, "percent": percent})
+            
+            try:
+                result = self._process_day(
+                    sb, vendor, day, cookie, stepfun_cookie, auth_secret, tian_cookie,
+                    moonshot_token, moonshot_org_id, moonshot_cookie, textin_token, deepseek_auth,
+                    aws_dump_raw, write_summary, bill_client, bill_models, aws_client, volc_ready,
+                    tian_daily, deepseek_daily, deepseek_token_daily,
+                    moonshot_daily, textin_daily, stepfun_daily
+                )
+                results.append(result)
+                
+                if result.get("bill_amount") is not None:
+                    amt = result['bill_amount']
+                    currency = result.get('bill_currency', 'CNY')
+                    log_msg = f"✓ {day} | 金额: {amt:.4f} {currency}"
+                    self._send_sse({"type": "log", "message": log_msg})
+                elif "total_tokens" in result:
+                    tokens = result['total_tokens']
+                    log_msg = f"✓ {day} | Token: {tokens:,}"
+                    self._send_sse({"type": "log", "message": log_msg})
+                else:
+                    self._send_sse({"type": "log", "message": f"✓ {day} | 完成"})
+                
+                # 防刷机制：对于需要爬取的接口，添加请求间隔
+                if vendor in ("bailian", "aliyun_bill"):
+                    time.sleep(3)
+            except Exception as exc:
+                self._send_sse({"type": "log", "message": f"[ERROR] {day}: {exc}"})
+                results.append({"day": day, "total_tokens": 0, "raw": {"error": str(exc)}})
+        
+        self._send_sse({"type": "log", "message": f"[DONE] 完成，共处理 {len(results)} 天"})
+        self._send_sse({"type": "done"})
+        _cleanup_session(self._session_id)
+    
+    def _process_day(self, sb, vendor, day, cookie, stepfun_cookie, auth_secret, tian_cookie,
+                     moonshot_token, moonshot_org_id, moonshot_cookie, textin_token, deepseek_auth,
+                     aws_dump_raw, write_summary, bill_client, bill_models, aws_client, volc_ready,
+                     tian_daily, deepseek_daily, deepseek_token_daily=None,
+                     moonshot_daily=None, textin_daily=None, stepfun_daily=None):
+        """处理单天数据，返回结果字典"""
+        if vendor == "bailian":
+            day_date = datetime.fromisoformat(day).date()
+            start_ms, end_ms = bj_day_range(day_date)
+            # 从环境变量获取必要参数
+            workspace_id = os.getenv("ALIYUN_BAILIAN_WORKSPACE_ID", "")
+            region = os.getenv("ALIYUN_BAILIAN_REGION", "")
+            url = os.getenv("ALIYUN_BAILIAN_USAGE_URL") or None
+            sec_token = os.getenv("ALIYUN_BAILIAN_SEC_TOKEN") or None
+            csrf_token = os.getenv("ALIYUN_BAILIAN_CSRF_TOKEN") or None
+            raw = fetch_usage(
+                workspace_id,
+                start_ms,
+                end_ms,
+                url=url,
+                cookie=cookie,
+                sec_token=sec_token,
+                csrf_token=csrf_token,
+                region=region,
+            )
+            total_tokens = parse_total_tokens(raw)
+            print(f"[OK] bailian day={day} total_tokens={total_tokens}")
+            delete_existing_daily(sb, day, "aliyun_bailian", None)
+            row = {
+                "day": day,
+                "vendor": "aliyun_bailian",
+                "model_id": "total",
+                "project_id": workspace_id,
+                "total_tokens": total_tokens,
+            }
+            insert_daily_row(sb, row)
+            if write_summary:
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_token_daily(sb, "aliyun_bailian", week_start.isoformat(), week_end.isoformat())
+                upsert_weekly_with_id(sb, "aliyun_bailian", week_start.isoformat(), week_end.isoformat(), weekly)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_token_daily(sb, "aliyun_bailian", month_start, month_end.isoformat())
+                upsert_monthly_with_id(sb, "aliyun_bailian", month, monthly)
+            return {"day": day, "total_tokens": total_tokens, "raw": raw}
+        
+        elif vendor == "stepfun":
+            day_date = datetime.fromisoformat(day).date()
+            # 使用预处理的数据（已在预处理阶段一次性获取并按日期聚合）
+            day_data = stepfun_daily.get(day, {}) if stepfun_daily else {}
+            total_tokens = day_data.get("tokens") or (day_data.get("input", 0) + day_data.get("output", 0))
+            total_cost = day_data.get("cost", 0.0)
+            cost_currency = "CNY"
+            print(f"[OK] stepfun day={day} total_tokens={total_tokens} cost={total_cost}")
+            delete_existing_daily(sb, day, "stepfun", None)
+            row = {
+                "day": day,
+                "vendor": "stepfun",
+                "model_id": "total",
+                "total_tokens": total_tokens,
+            }
+            insert_daily_row(sb, row)
+            if write_summary:
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_token_daily(sb, "stepfun", week_start.isoformat(), week_end.isoformat())
+                upsert_weekly_with_id(sb, "stepfun", week_start.isoformat(), week_end.isoformat(), weekly)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_token_daily(sb, "stepfun", month_start, month_end.isoformat())
+                upsert_monthly_with_id(sb, "stepfun", month, monthly)
+            return {"day": day, "total_tokens": total_tokens, "total_cost": total_cost, "cost_currency": cost_currency}
+        
+        elif vendor == "aliyun_bill":
+            day_date = datetime.fromisoformat(day).date()
+            rows, summary = _fetch_aliyun_bill_rows(bill_client, bill_models, day_date)
+            total_amount = summary.get("amount", 0.0)
+            total_gross = summary.get("gross", 0.0)
+            currency = summary.get("currency", "CNY")
+            
+            # 1. 写入产品明细表 aliyun_bill_daily
+            if rows:
+                delete_aliyun_bill_daily(sb, day)
+                try:
+                    sb.schema("financial_hub_prod").table("aliyun_bill_daily").upsert(rows).execute()
+                    print(f"[OK] aliyun_bill day={day} rows={len(rows)} amount={total_amount}")
+                except APIError as exc:
+                    if _is_missing_gross_error(exc):
+                        rows_without_gross = _strip_pretax_gross(rows)
+                        sb.schema("financial_hub_prod").table("aliyun_bill_daily").upsert(rows_without_gross).execute()
+                        print(f"[WARN] aliyun_bill day={day} missing pretax_gross_amount column; gross skipped")
+                    else:
+                        raise
+            else:
+                print(f"[WARN] aliyun_bill day={day} rows=0")
+            
+            # 2. 按 AI/非AI 分类写入 bill_daily_summary
+            if rows:
+                agg = {}
+                for row in rows:
+                    is_ai = bool(row.get("is_ai_cost"))
+                    amount = float(row.get("pretax_amount") or 0)
+                    gross = float(row.get("pretax_gross_amount") or row.get("pretax_amount") or 0)
+                    curr = row.get("currency") or "CNY"
+                    if is_ai not in agg:
+                        agg[is_ai] = {"amount": 0.0, "gross": 0.0, "currencies": set()}
+                    agg[is_ai]["amount"] += amount
+                    agg[is_ai]["gross"] += gross
+                    agg[is_ai]["currencies"].add(curr)
+                for is_ai_cost, info in agg.items():
+                    currencies = info["currencies"]
+                    if len(currencies) == 1:
+                        curr = next(iter(currencies))
+                    elif len(currencies) > 1:
+                        curr = "MIXED"
+                    else:
+                        curr = "CNY"
+                    upsert_bill_daily_summary(
+                        sb, "aliyun", day,
+                        _normalize_amount(info["amount"]),
+                        _normalize_amount(info["gross"]),
+                        curr, is_ai_cost=is_ai_cost
+                    )
+            
+            # 3. 写入周/月汇总
+            if write_summary and rows:
+                week_start, week_end = week_bounds(day_date)
+                for is_ai_cost in agg.keys():
+                    weekly = sum_bill_daily(sb, "aliyun", is_ai_cost, week_start.isoformat(), week_end.isoformat())
+                    if weekly:
+                        upsert_bill_weekly_summary(sb, "aliyun", week_start.isoformat(), week_end.isoformat(), weekly["amount"], weekly["gross"], weekly["currency"], is_ai_cost)
+                    month = day[:7]
+                    month_start = f"{month}-01"
+                    month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                    monthly = sum_bill_daily(sb, "aliyun", is_ai_cost, month_start, month_end.isoformat())
+                    if monthly:
+                        upsert_bill_monthly_summary(sb, "aliyun", month, monthly["amount"], monthly["gross"], monthly["currency"], is_ai_cost)
+            
+            return {"day": day, "bill_amount": total_amount, "bill_gross_amount": total_gross, "bill_currency": currency, "raw": rows}
+        
+        elif vendor == "aws_bill":
+            day_date = datetime.fromisoformat(day).date()
+            summary = _fetch_aws_bill_daily(aws_client, day_date, include_raw=aws_dump_raw)
+            total_amount = summary.get("amount", 0.0)
+            total_gross = summary.get("gross", 0.0)
+            currency = summary.get("currency", "USD")
+            print(f"[OK] aws_bill day={day} amount={total_amount} gross={total_gross} currency={currency}")
+            upsert_bill_daily_summary(sb, "aws", day, total_amount, total_gross, currency, is_ai_cost=False)
+            if write_summary:
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_bill_daily(sb, "aws", False, week_start.isoformat(), week_end.isoformat())
+                if weekly:
+                    upsert_bill_weekly_summary(sb, "aws", week_start.isoformat(), week_end.isoformat(), weekly["amount"], weekly["gross"], weekly["currency"], False)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_bill_daily(sb, "aws", False, month_start, month_end.isoformat())
+                if monthly:
+                    upsert_bill_monthly_summary(sb, "aws", month, monthly["amount"], monthly["gross"], monthly["currency"], False)
+            return {"day": day, "bill_amount": total_amount, "bill_gross_amount": total_gross, "bill_currency": currency, "raw": summary}
+        
+        elif vendor == "volcengine_bill":
+            day_date = datetime.fromisoformat(day).date()
+            rows, summary = _fetch_volcengine_bill_daily(day_date)
+            ai_amount = summary.get("ai_amount", 0.0)
+            ai_gross = summary.get("ai_gross", 0.0)
+            non_ai_amount = summary.get("non_ai_amount", 0.0)
+            non_ai_gross = summary.get("non_ai_gross", 0.0)
+            currency = summary.get("currency", "CNY")
+            print(f"[OK] volcengine_bill day={day} AI={ai_amount} 非AI={non_ai_amount} gross={summary.get('gross', 0.0)} currency={currency} rows={len(rows)}")
+            # 先删除旧数据
+            delete_bill_daily_by_vendor(sb, "volcengine", day)
+            # AI 部分入库
+            if ai_amount > 0 or ai_gross > 0:
+                upsert_bill_daily_summary(sb, "volcengine", day, ai_amount, ai_gross, currency, is_ai_cost=True)
+            # 非 AI 部分入库
+            if non_ai_amount > 0 or non_ai_gross > 0:
+                upsert_bill_daily_summary(sb, "volcengine", day, non_ai_amount, non_ai_gross, currency, is_ai_cost=False)
+            if write_summary:
+                week_start, week_end = week_bounds(day_date)
+                # AI 周/月汇总
+                weekly_ai = sum_bill_daily(sb, "volcengine", True, week_start.isoformat(), week_end.isoformat())
+                if weekly_ai:
+                    upsert_bill_weekly_summary(sb, "volcengine", week_start.isoformat(), week_end.isoformat(), weekly_ai["amount"], weekly_ai["gross"], weekly_ai["currency"], True)
+                # 非AI 周/月汇总
+                weekly_non_ai = sum_bill_daily(sb, "volcengine", False, week_start.isoformat(), week_end.isoformat())
+                if weekly_non_ai:
+                    upsert_bill_weekly_summary(sb, "volcengine", week_start.isoformat(), week_end.isoformat(), weekly_non_ai["amount"], weekly_non_ai["gross"], weekly_non_ai["currency"], False)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly_ai = sum_bill_daily(sb, "volcengine", True, month_start, month_end.isoformat())
+                if monthly_ai:
+                    upsert_bill_monthly_summary(sb, "volcengine", month, monthly_ai["amount"], monthly_ai["gross"], monthly_ai["currency"], True)
+                monthly_non_ai = sum_bill_daily(sb, "volcengine", False, month_start, month_end.isoformat())
+                if monthly_non_ai:
+                    upsert_bill_monthly_summary(sb, "volcengine", month, monthly_non_ai["amount"], monthly_non_ai["gross"], monthly_non_ai["currency"], False)
+            return {"day": day, "bill_amount": ai_amount + non_ai_amount, "bill_gross_amount": ai_gross + non_ai_gross, "bill_currency": currency, "raw": rows}
+        
+        elif vendor == "tianyancha_bill":
+            day_date = datetime.fromisoformat(day).date()
+            daily_info = (tian_daily or {}).get(day, None)
+            if daily_info:
+                amount = daily_info["amount"]
+                gross = daily_info["gross"]
+                currency = daily_info["currency"]
+            else:
+                amount, gross, currency = 0.0, 0.0, "CNY"
+            print(f"[OK] tianyancha_bill day={day} amount={amount} gross={gross} currency={currency}")
+            upsert_bill_daily_summary(sb, "tianyancha", day, amount, gross, currency, is_ai_cost=False)
+            if write_summary:
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_bill_daily(sb, "tianyancha", False, week_start.isoformat(), week_end.isoformat())
+                if weekly:
+                    upsert_bill_weekly_summary(sb, "tianyancha", week_start.isoformat(), week_end.isoformat(), weekly["amount"], weekly["gross"], weekly["currency"], False)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_bill_daily(sb, "tianyancha", False, month_start, month_end.isoformat())
+                if monthly:
+                    upsert_bill_monthly_summary(sb, "tianyancha", month, monthly["amount"], monthly["gross"], monthly["currency"], False)
+            return {"day": day, "bill_amount": amount, "bill_gross_amount": gross, "bill_currency": currency, "raw": {}}
+        
+        elif vendor == "moonshot_bill":
+            day_date = datetime.fromisoformat(day).date()
+            daily_info = (moonshot_daily or {}).get(day, None)
+            if daily_info:
+                total_amount = daily_info["amount"]
+                total_gross = daily_info["gross"]
+                currency = daily_info.get("currency", "CNY")
+            else:
+                total_amount, total_gross, currency = 0.0, 0.0, "CNY"
+            print(f"[OK] moonshot_bill day={day} amount={total_amount} gross={total_gross} currency={currency}")
+            upsert_bill_daily_summary(sb, "moonshot", day, total_amount, total_gross, currency, is_ai_cost=True)
+            if write_summary:
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_bill_daily(sb, "moonshot", True, week_start.isoformat(), week_end.isoformat())
+                if weekly:
+                    upsert_bill_weekly_summary(sb, "moonshot", week_start.isoformat(), week_end.isoformat(), weekly["amount"], weekly["gross"], weekly["currency"], True)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_bill_daily(sb, "moonshot", True, month_start, month_end.isoformat())
+                if monthly:
+                    upsert_bill_monthly_summary(sb, "moonshot", month, monthly["amount"], monthly["gross"], monthly["currency"], True)
+            return {"day": day, "bill_amount": total_amount, "bill_gross_amount": total_gross, "bill_currency": currency, "raw": {}}
+        
+        elif vendor == "textin_bill":
+            day_date = datetime.fromisoformat(day).date()
+            daily_info = (textin_daily or {}).get(day, None)
+            if daily_info:
+                total_amount = daily_info["amount"]
+                currency = daily_info.get("currency", "CNY")
+            else:
+                total_amount, currency = 0.0, "CNY"
+            print(f"[OK] textin_bill day={day} amount={total_amount} currency={currency}")
+            upsert_bill_daily_summary(sb, "textin", day, total_amount, total_amount, currency, is_ai_cost=False)
+            if write_summary:
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_bill_daily(sb, "textin", False, week_start.isoformat(), week_end.isoformat())
+                if weekly:
+                    upsert_bill_weekly_summary(sb, "textin", week_start.isoformat(), week_end.isoformat(), weekly["amount"], weekly["gross"], weekly["currency"], False)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_bill_daily(sb, "textin", False, month_start, month_end.isoformat())
+                if monthly:
+                    upsert_bill_monthly_summary(sb, "textin", month, monthly["amount"], monthly["gross"], monthly["currency"], False)
+            return {"day": day, "bill_amount": total_amount, "bill_gross_amount": total_amount, "bill_currency": currency, "raw": {}}
+        
+        elif vendor == "deepseek_bill":
+            daily_info = (deepseek_daily or {}).get(day, None)
+            if daily_info:
+                amount = daily_info["amount"]
+                gross = daily_info["gross"]
+                currency = daily_info.get("currency", "CNY")
+            else:
+                amount, gross, currency = 0.0, 0.0, "CNY"
+            print(f"[OK] deepseek_bill day={day} amount={amount} gross={gross} currency={currency}")
+            upsert_bill_daily_summary(sb, "deepseek", day, amount, gross, currency, is_ai_cost=True)
+            if write_summary:
+                day_date = datetime.fromisoformat(day).date()
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_bill_daily(sb, "deepseek", True, week_start.isoformat(), week_end.isoformat())
+                upsert_bill_weekly_summary(sb, "deepseek", week_start.isoformat(), week_end.isoformat(), weekly["amount"], weekly["gross"], weekly["currency"], True)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_bill_daily(sb, "deepseek", True, month_start, month_end.isoformat())
+                upsert_bill_monthly_summary(sb, "deepseek", month, monthly["amount"], monthly["gross"], monthly["currency"], True)
+            return {"day": day, "bill_amount": amount, "bill_gross_amount": gross, "bill_currency": currency, "raw": {}}
+        
+        elif vendor == "deepseek_token":
+            daily_info = (deepseek_token_daily or {}).get(day, None)
+            if daily_info:
+                total_tokens = daily_info["total_tokens"]
+            else:
+                total_tokens = 0
+            print(f"[OK] deepseek_token day={day} total_tokens={total_tokens}")
+            delete_existing_daily(sb, day, "deepseek", None)
+            row = {
+                "day": day,
+                "vendor": "deepseek",
+                "model_id": "total",
+                "total_tokens": total_tokens,
+                "remark": "deepseek token usage",
+            }
+            insert_daily_row(sb, row)
+            if write_summary:
+                day_date = datetime.fromisoformat(day).date()
+                week_start, week_end = week_bounds(day_date)
+                weekly = sum_token_daily(sb, "deepseek", week_start.isoformat(), week_end.isoformat())
+                upsert_weekly_with_id(sb, "deepseek", week_start.isoformat(), week_end.isoformat(), weekly)
+                month = day[:7]
+                month_start = f"{month}-01"
+                month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+                monthly = sum_token_daily(sb, "deepseek", month_start, month_end.isoformat())
+                upsert_monthly_with_id(sb, "deepseek", month, monthly)
+            return {"day": day, "total_tokens": total_tokens, "raw": {}}
+        
+        else:
+            return {"day": day, "total_tokens": 0, "raw": {"error": f"unknown vendor: {vendor}"}}
 
     def do_POST(self):
         if self.path != "/fetch":
@@ -1344,6 +2376,9 @@ class Handler(BaseHTTPRequestHandler):
         moonshot_org_id = (form.get("moonshot_org_id") or [""])[0].strip()
         moonshot_cookie = (form.get("moonshot_cookie") or [""])[0].strip()
         textin_token = (form.get("textin_token") or [""])[0].strip()
+        # 获取第一个非空的 deepseek_auth 和 deepseek_cookie（因为有两个同名字段）
+        deepseek_auth = next((v.strip() for v in (form.get("deepseek_auth") or []) if v.strip()), "")
+        deepseek_cookie = next((v.strip() for v in (form.get("deepseek_cookie") or []) if v.strip()), "")
         start_day = (form.get("start_day") or [""])[0].strip()
         end_day = (form.get("end_day") or [""])[0].strip()
         retry_day = (form.get("retry_day") or [""])[0].strip()
@@ -1368,6 +2403,16 @@ class Handler(BaseHTTPRequestHandler):
             textin_token = textin_token or os.getenv("TEXTIN_TOKEN", "").strip()
             if not textin_token:
                 send_plain_error(self, 400, "missing TextIn token (form or env: TEXTIN_TOKEN)")
+                return
+        if vendor == "deepseek_bill":
+            deepseek_auth = deepseek_auth or os.getenv("DEEPSEEK_AUTH_TOKEN", "").strip()
+            if not deepseek_auth:
+                send_plain_error(self, 400, "missing DeepSeek authorization token (form or env: DEEPSEEK_AUTH_TOKEN)")
+                return
+        if vendor == "deepseek_token":
+            deepseek_auth = deepseek_auth or os.getenv("DEEPSEEK_AUTH_TOKEN", "").strip()
+            if not deepseek_auth:
+                send_plain_error(self, 400, "missing DeepSeek authorization token (form or env: DEEPSEEK_AUTH_TOKEN)")
                 return
         if not start_day or not end_day:
             self.send_error(400, "start_day/end_day are required")
@@ -1460,6 +2505,54 @@ class Handler(BaseHTTPRequestHandler):
                 textin_daily = _aggregate_textin_daily(textin_items)
             except Exception as exc:
                 send_plain_error(self, 400, f"textin fetch failed: {exc}")
+                return
+
+        deepseek_daily = None
+        if vendor == "deepseek_bill":
+            try:
+                start_date = datetime.fromisoformat(start_day).date()
+                end_date = datetime.fromisoformat(end_day).date()
+                all_daily = {}
+                
+                current = start_date.replace(day=1)
+                while current <= end_date:
+                    year = current.year
+                    month = current.month
+                    raw_data = _fetch_deepseek_cost(deepseek_auth, year, month, deepseek_cookie)
+                    parsed = _parse_deepseek_cost(raw_data)
+                    all_daily.update(parsed.get("daily", {}))
+                    if month == 12:
+                        current = current.replace(year=year + 1, month=1)
+                    else:
+                        current = current.replace(month=month + 1)
+                
+                deepseek_daily = all_daily
+            except Exception as exc:
+                send_plain_error(self, 400, f"deepseek fetch failed: {exc}")
+                return
+
+        deepseek_token_daily = None
+        if vendor == "deepseek_token":
+            try:
+                start_date = datetime.fromisoformat(start_day).date()
+                end_date = datetime.fromisoformat(end_day).date()
+                all_daily = {}
+                
+                current = start_date.replace(day=1)
+                while current <= end_date:
+                    year = current.year
+                    month = current.month
+                    raw_data = _fetch_deepseek_amount(deepseek_auth, year, month, deepseek_cookie)
+                    parsed = _parse_deepseek_amount(raw_data)
+                    all_daily.update(parsed.get("daily", {}))
+                    if month == 12:
+                        current = current.replace(year=year + 1, month=1)
+                    else:
+                        current = current.replace(month=month + 1)
+                
+                deepseek_token_daily = all_daily
+            except Exception as exc:
+                send_plain_error(self, 400, f"deepseek token fetch failed: {exc}")
                 return
 
         for day in day_list:
@@ -1605,7 +2698,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 if summary.get("record_type_totals"):
                     print(
-                        f"[OK] aws record_type usage={summary.get('usage_amount')} credit={summary.get('credit_amount')}"
+                        f"[OK] aws record_type usage={summary.get('usage_amount')} tax={summary.get('tax_amount')} credit={summary.get('credit_amount')}"
                     )
                 raw_for_page = summary.get("raw_response") if aws_dump_raw else summary
                 upsert_bill_daily_summary(
@@ -1661,19 +2754,21 @@ class Handler(BaseHTTPRequestHandler):
                 rows, summary = _fetch_volcengine_bill_daily(
                     day_date, ignore_zero=0, verbose=(day == end_day)
                 )
+                ai_amount = summary.get("ai_amount", 0.0)
+                ai_gross = summary.get("ai_gross", 0.0)
+                non_ai_amount = summary.get("non_ai_amount", 0.0)
+                non_ai_gross = summary.get("non_ai_gross", 0.0)
                 print(
-                    f"[OK] volcengine bill day={day} net={summary['amount']} gross={summary['gross']} currency={summary['currency']} rows={summary['rows']}"
+                    f"[OK] volcengine bill day={day} AI={ai_amount} 非AI={non_ai_amount} gross={summary['gross']} currency={summary['currency']} rows={summary['rows']}"
                 )
-                # 入库账单金额
-                upsert_bill_daily_summary(
-                    sb,
-                    "volcengine",
-                    day,
-                    summary["amount"],
-                    summary["gross"],
-                    summary["currency"],
-                    is_ai_cost=False,
-                )
+                # 先删除旧数据
+                delete_bill_daily_by_vendor(sb, "volcengine", day)
+                # AI 部分入库
+                if ai_amount > 0 or ai_gross > 0:
+                    upsert_bill_daily_summary(sb, "volcengine", day, ai_amount, ai_gross, summary["currency"], is_ai_cost=True)
+                # 非 AI 部分入库
+                if non_ai_amount > 0 or non_ai_gross > 0:
+                    upsert_bill_daily_summary(sb, "volcengine", day, non_ai_amount, non_ai_gross, summary["currency"], is_ai_cost=False)
                 # 入库 Token 用量（如果有）
                 token_total = summary.get("token_total", 0)
                 if token_total > 0:
@@ -1698,33 +2793,27 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"[OK] volcengine token day={day} total={token_total} input={summary.get('token_input', 0)} output={summary.get('token_output', 0)}")
                 if write_summary:
                     week_start, week_end = week_bounds(day_date)
-                    # 账单周/月汇总
-                    weekly = sum_bill_daily(sb, "volcengine", False, week_start.isoformat(), week_end.isoformat())
-                    if weekly:
-                        upsert_bill_weekly_summary(
-                            sb,
-                            "volcengine",
-                            week_start.isoformat(),
-                            week_end.isoformat(),
-                            weekly["amount"],
-                            weekly["gross"],
-                            weekly["currency"],
-                            is_ai_cost=False,
-                        )
+                    # AI 账单周/月汇总
+                    weekly_ai = sum_bill_daily(sb, "volcengine", True, week_start.isoformat(), week_end.isoformat())
+                    if weekly_ai:
+                        upsert_bill_weekly_summary(sb, "volcengine", week_start.isoformat(), week_end.isoformat(),
+                                                   weekly_ai["amount"], weekly_ai["gross"], weekly_ai["currency"], True)
+                    # 非AI 账单周/月汇总
+                    weekly_non_ai = sum_bill_daily(sb, "volcengine", False, week_start.isoformat(), week_end.isoformat())
+                    if weekly_non_ai:
+                        upsert_bill_weekly_summary(sb, "volcengine", week_start.isoformat(), week_end.isoformat(),
+                                                   weekly_non_ai["amount"], weekly_non_ai["gross"], weekly_non_ai["currency"], False)
                     month_str = day_date.strftime("%Y-%m")
                     month_start = day_date.replace(day=1).isoformat()
                     month_end = (day_date.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-                    monthly = sum_bill_daily(sb, "volcengine", False, month_start, month_end.isoformat())
-                    if monthly:
-                        upsert_bill_monthly_summary(
-                            sb,
-                            "volcengine",
-                            month_str,
-                            monthly["amount"],
-                            monthly["gross"],
-                            monthly["currency"],
-                            is_ai_cost=False,
-                        )
+                    monthly_ai = sum_bill_daily(sb, "volcengine", True, month_start, month_end.isoformat())
+                    if monthly_ai:
+                        upsert_bill_monthly_summary(sb, "volcengine", month_str,
+                                                    monthly_ai["amount"], monthly_ai["gross"], monthly_ai["currency"], True)
+                    monthly_non_ai = sum_bill_daily(sb, "volcengine", False, month_start, month_end.isoformat())
+                    if monthly_non_ai:
+                        upsert_bill_monthly_summary(sb, "volcengine", month_str,
+                                                    monthly_non_ai["amount"], monthly_non_ai["gross"], monthly_non_ai["currency"], False)
                     # Token 周/月汇总
                     if token_total > 0:
                         weekly_token = sum_token_daily(sb, "volcengine", week_start.isoformat(), week_end.isoformat())
@@ -1736,8 +2825,8 @@ class Handler(BaseHTTPRequestHandler):
                 results.append(
                     {
                         "day": day,
-                        "bill_amount": summary["amount"],
-                        "bill_gross_amount": summary["gross"],
+                        "bill_amount": ai_amount + non_ai_amount,
+                        "bill_gross_amount": ai_gross + non_ai_gross,
                         "bill_currency": summary["currency"],
                         "total_tokens": token_total,
                         "raw": rows if aws_dump_raw else summary,
@@ -1920,6 +3009,95 @@ class Handler(BaseHTTPRequestHandler):
                         "raw": raw_items,
                     }
                 )
+            elif vendor == "deepseek_bill":
+                daily_info = (deepseek_daily or {}).get(day, None)
+                if daily_info:
+                    amount = _normalize_amount(daily_info["amount"])
+                    gross = _normalize_amount(daily_info["gross"])
+                    currency = daily_info["currency"]
+                else:
+                    amount = 0.0
+                    gross = 0.0
+                    currency = "CNY"
+                upsert_bill_daily_summary(
+                    sb,
+                    "deepseek",
+                    day,
+                    amount,
+                    gross,
+                    currency,
+                    is_ai_cost=True,
+                )
+                print(f"[OK] deepseek bill day={day} amount={amount} gross={gross} currency={currency}")
+                if write_summary:
+                    week_start, week_end = week_bounds(day_date)
+                    weekly = sum_bill_daily(sb, "deepseek", True, week_start.isoformat(), week_end.isoformat())
+                    if weekly:
+                        upsert_bill_weekly_summary(
+                            sb,
+                            "deepseek",
+                            week_start.isoformat(),
+                            week_end.isoformat(),
+                            weekly["amount"],
+                            weekly["gross"],
+                            weekly["currency"],
+                            is_ai_cost=True,
+                        )
+                    month_str = day_date.strftime("%Y-%m")
+                    month_start = day_date.replace(day=1).isoformat()
+                    month_end = (day_date.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+                    monthly = sum_bill_daily(sb, "deepseek", True, month_start, month_end.isoformat())
+                    if monthly:
+                        upsert_bill_monthly_summary(
+                            sb,
+                            "deepseek",
+                            month_str,
+                            monthly["amount"],
+                            monthly["gross"],
+                            monthly["currency"],
+                            is_ai_cost=True,
+                        )
+                results.append(
+                    {
+                        "day": day,
+                        "bill_amount": amount,
+                        "bill_gross_amount": gross,
+                        "bill_currency": currency,
+                        "raw": daily_info or {},
+                    }
+                )
+            elif vendor == "deepseek_token":
+                daily_info = (deepseek_token_daily or {}).get(day, None)
+                if daily_info:
+                    total_tokens = daily_info["total_tokens"]
+                else:
+                    total_tokens = 0
+                delete_existing_daily(sb, day, "deepseek", None)
+                row = {
+                    "day": day,
+                    "vendor": "deepseek",
+                    "model_id": "total",
+                    "total_tokens": total_tokens,
+                    "remark": "deepseek token usage",
+                }
+                insert_daily_row(sb, row)
+                print(f"[OK] deepseek_token day={day} total_tokens={total_tokens}")
+                if write_summary:
+                    week_start, week_end = week_bounds(day_date)
+                    weekly = sum_token_daily(sb, "deepseek", week_start.isoformat(), week_end.isoformat())
+                    upsert_weekly_with_id(sb, "deepseek", week_start.isoformat(), week_end.isoformat(), weekly)
+                    month_str = day_date.strftime("%Y-%m")
+                    month_start = day_date.replace(day=1).isoformat()
+                    month_end = (day_date.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+                    monthly = sum_token_daily(sb, "deepseek", month_start, month_end.isoformat())
+                    upsert_monthly_with_id(sb, "deepseek", month_str, monthly)
+                results.append(
+                    {
+                        "day": day,
+                        "total_tokens": total_tokens,
+                        "raw": daily_info or {},
+                    }
+                )
             else:
                 workspace_id = os.getenv("ALIYUN_BAILIAN_WORKSPACE_ID", "")
                 region = os.getenv("ALIYUN_BAILIAN_REGION", "")
@@ -1983,12 +3161,11 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"[OK] supabase day={day} (summary skipped)")
                 results.append({"day": day, "total_tokens": total_tokens, "raw": data})
 
-        page = render_result(start_day, end_day, results)
+        page = render_result(start_day, end_day, results, vendor)
         self.send_response(200)
         self.send_header("content-type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(page.encode("utf-8"))
-        threading.Thread(target=_shutdown_server, args=(self.server,), daemon=True).start()
 
 
 def main():
