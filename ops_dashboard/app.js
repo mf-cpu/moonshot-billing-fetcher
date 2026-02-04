@@ -1,3 +1,121 @@
+// ========== 登录模块 ==========
+const AUTH_KEY = "ops_dashboard_auth";
+const AUTH_EXPIRY_HOURS = 24; // 登录有效期（小时）
+
+// 默认密码: "ops2026"
+// 可在 config.js 中通过 window.PASSWORD_HASH 覆盖
+const DEFAULT_PASSWORD = "ops2026";
+
+async function sha256(message) {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// 控制台工具：生成密码哈希
+window.generatePasswordHash = async function(password) {
+  const hash = await sha256(password);
+  console.log("密码:", password);
+  console.log("哈希值:", hash);
+  console.log("将以下代码添加到 config.js:");
+  console.log(`window.PASSWORD_HASH = "${hash}";`);
+  return hash;
+};
+
+function getPasswordHash() {
+  return window.PASSWORD_HASH || null;
+}
+
+function isLoggedIn() {
+  const auth = sessionStorage.getItem(AUTH_KEY);
+  if (!auth) return false;
+  try {
+    const { timestamp } = JSON.parse(auth);
+    const hoursPassed = (Date.now() - timestamp) / (1000 * 60 * 60);
+    return hoursPassed < AUTH_EXPIRY_HOURS;
+  } catch {
+    return false;
+  }
+}
+
+function setLoggedIn() {
+  sessionStorage.setItem(AUTH_KEY, JSON.stringify({ timestamp: Date.now() }));
+}
+
+function logout() {
+  sessionStorage.removeItem(AUTH_KEY);
+  showLoginScreen();
+}
+
+function showLoginScreen() {
+  document.getElementById("loginScreen").style.display = "flex";
+  document.getElementById("mainApp").style.display = "none";
+}
+
+function showMainApp() {
+  document.getElementById("loginScreen").style.display = "none";
+  document.getElementById("mainApp").style.display = "block";
+}
+
+async function verifyPassword(password) {
+  const configuredHash = getPasswordHash();
+  
+  if (configuredHash) {
+    // 使用配置的哈希值验证
+    const inputHash = await sha256(password);
+    return inputHash === configuredHash;
+  } else {
+    // 使用默认密码验证
+    return password === DEFAULT_PASSWORD;
+  }
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  const password = document.getElementById("loginPassword").value;
+  const errorEl = document.getElementById("loginError");
+  
+  if (!password) {
+    errorEl.textContent = "请输入密码";
+    errorEl.classList.add("show");
+    return;
+  }
+
+  const isValid = await verifyPassword(password);
+
+  if (isValid) {
+    setLoggedIn();
+    errorEl.classList.remove("show");
+    document.getElementById("loginPassword").value = "";
+    showMainApp();
+    initApp();
+  } else {
+    errorEl.textContent = "密码错误，请重试";
+    errorEl.classList.add("show");
+    document.getElementById("loginPassword").value = "";
+    document.getElementById("loginPassword").focus();
+  }
+}
+
+function initAuth() {
+  // 绑定登录表单
+  document.getElementById("loginForm").addEventListener("submit", handleLogin);
+  
+  // 绑定注销按钮
+  document.getElementById("logoutButton").addEventListener("click", logout);
+
+  // 检查登录状态
+  if (isLoggedIn()) {
+    showMainApp();
+    initApp();
+  } else {
+    showLoginScreen();
+    document.getElementById("loginPassword").focus();
+  }
+}
+
+// ========== 主应用 ==========
 const state = {
   startDate: null,
   endDate: null,
@@ -1336,7 +1454,12 @@ async function fetchDeepseekCost() {
 // DeepSeek 事件绑定
 els.fetchDeepseek.addEventListener("click", fetchDeepseekCost);
 
-// 初始化
-initDateRange();
-initDeepseekForm();
-refresh();
+// 初始化主应用（登录后调用）
+function initApp() {
+  initDateRange();
+  initDeepseekForm();
+  refresh();
+}
+
+// 页面加载时初始化认证
+initAuth();
