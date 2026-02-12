@@ -1,0 +1,7 @@
+requests==2.32.5
+python-dotenv==1.2.1
+supabase==2.27.1
+postgrest==2.27.1
+alibabacloud-bssopenapi20171214==5.1.0
+alibabacloud-tea-openapi==0.4.2
+boto3==1.42.34
