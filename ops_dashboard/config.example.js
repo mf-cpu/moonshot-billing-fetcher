@@ -2,12 +2,11 @@
 window.SUPABASE_URL = "https://your-project.supabase.co";
 window.SUPABASE_ANON_KEY = "your-anon-key";
 
-// 登录密码配置（可选）
-// 如果不设置，使用默认密码: ops2026
-// 
-// 自定义密码方法：
-// 1. 打开浏览器控制台（F12）
-// 2. 运行: generatePasswordHash("你的新密码")
-// 3. 将输出的哈希值填入下方
-// 
-// window.PASSWORD_HASH = "your-sha256-hash-here";
+// USD to CNY 汇率（可选，默认 7.25）
+// window.USD_TO_CNY = 7.25;
+
+// 飞书统一授权登录配置（可选）
+// 授权页面地址，默认为生产环境
+// 生产环境: https://app.ttcadvisory.com/auth/authorize
+// 测试环境: https://int.ttcadvisory.com/auth/authorize
+// window.AUTH_URL = "https://app.ttcadvisory.com/auth/authorize";

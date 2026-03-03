@@ -33,6 +33,76 @@ from aliyun_token_ingest_daily import (
 
 
 BJ = timezone(timedelta(hours=8))
+
+# ========== 登录保护 ==========
+LOGIN_PASSWORD = os.getenv("OPS_PASSWORD", "ops2026")
+_login_tokens = {}  # token -> expire_time
+
+def _generate_login_token():
+    """生成登录令牌"""
+    import secrets
+    token = secrets.token_hex(32)
+    _login_tokens[token] = time.time() + 86400  # 24小时有效
+    # 清理过期 token
+    now = time.time()
+    expired = [k for k, v in _login_tokens.items() if v < now]
+    for k in expired:
+        del _login_tokens[k]
+    return token
+
+def _verify_login_token(token):
+    """验证登录令牌"""
+    if not token:
+        return False
+    expire = _login_tokens.get(token)
+    if not expire:
+        return False
+    if time.time() > expire:
+        del _login_tokens[token]
+        return False
+    return True
+
+def _get_cookie_token(handler):
+    """从请求 Cookie 中获取 login_token"""
+    cookie_header = handler.headers.get("Cookie", "")
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith("ops_token="):
+            return part[len("ops_token="):]
+    return None
+
+def render_login_page(error=""):
+    """渲染登录页面"""
+    error_html = f'<div class="login-error">{html.escape(error)}</div>' if error else ''
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>数据拉取工具 - 登录</title>
+<style>
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center}}
+.login-card{{background:#fff;border-radius:12px;padding:40px;width:100%;max-width:400px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.25)}}
+.login-card h2{{margin:0 0 8px;font-size:24px;font-weight:700;color:#111827;text-align:center}}
+.login-card p{{margin:0 0 32px;color:#6b7280;font-size:14px;text-align:center}}
+.login-card input[type=password]{{width:100%;padding:14px 16px;font-size:16px;border:2px solid #e5e7eb;border-radius:8px;background:#f9fafb;transition:border-color .2s,background .2s}}
+.login-card input[type=password]:focus{{outline:none;border-color:#4f46e5;background:#fff}}
+.login-card button{{width:100%;padding:14px;font-size:16px;font-weight:600;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;margin-top:20px;transition:background .2s}}
+.login-card button:hover{{background:#4338ca}}
+.login-error{{margin-top:16px;padding:12px;background:#fef2f2;color:#ef4444;border-radius:8px;font-size:14px;text-align:center}}
+</style>
+</head>
+<body>
+<div class="login-card">
+<h2>数据拉取工具</h2>
+<p>请输入访问密码</p>
+<form method="post" action="/login">
+<input type="password" name="password" placeholder="输入密码" autocomplete="current-password" required/>
+<button type="submit">登 录</button>
+</form>
+{error_html}
+</div>
+</body>
+</html>"""
 STEPFUN_API = os.getenv(
     "STEPFUN_USAGE_URL",
     "https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/DevQueryUsageHistory",
@@ -1614,10 +1684,33 @@ def _sum_stepfun_metrics(records: list[dict]) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _is_logged_in(self):
+        """检查是否已登录"""
+        token = _get_cookie_token(self)
+        return _verify_login_token(token)
+
+    def _send_login_page(self, error=""):
+        """发送登录页面"""
+        page = render_login_page(error)
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(page.encode("utf-8"))
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
+        # 登录页面不需要认证
+        if path == "/login":
+            self._send_login_page()
+            return
+
+        # 以下接口需要登录
+        if not self._is_logged_in():
+            self._send_login_page()
+            return
         
         if path == "/fetch_control":
             action = (query.get("action") or [""])[0]
@@ -1966,12 +2059,16 @@ class Handler(BaseHTTPRequestHandler):
                         "total_tokens": total_tokens,
                     }
                     insert_daily_row(sb, row)
+                    # 写入金额到 bill_daily_summary
+                    if total_cost > 0:
+                        upsert_bill_daily_summary(sb, "stepfun", day_str, total_cost, total_cost, "CNY", is_ai_cost=True)
                     self._send_sse({"type": "log", "message": f"✓ {day_str} | Token: {total_tokens:,} | 金额: ¥{total_cost:.2f}"})
                 # 写入周/月汇总
                 if write_summary:
                     for day_str in stepfun_daily.keys():
                         day_date = datetime.fromisoformat(day_str).date()
                         week_start, week_end = week_bounds(day_date)
+                        # Token 周/月汇总
                         weekly = sum_token_daily(sb, "stepfun", week_start.isoformat(), week_end.isoformat())
                         upsert_weekly_with_id(sb, "stepfun", week_start.isoformat(), week_end.isoformat(), weekly)
                         month = day_str[:7]
@@ -1979,6 +2076,13 @@ class Handler(BaseHTTPRequestHandler):
                         month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
                         monthly = sum_token_daily(sb, "stepfun", month_start, month_end.isoformat())
                         upsert_monthly_with_id(sb, "stepfun", month, monthly)
+                        # 账单 周/月汇总
+                        weekly_bill = sum_bill_daily(sb, "stepfun", True, week_start.isoformat(), week_end.isoformat())
+                        if weekly_bill:
+                            upsert_bill_weekly_summary(sb, "stepfun", week_start.isoformat(), week_end.isoformat(), weekly_bill["amount"], weekly_bill["gross"], weekly_bill["currency"], True)
+                        monthly_bill = sum_bill_daily(sb, "stepfun", True, month_start, month_end.isoformat())
+                        if monthly_bill:
+                            upsert_bill_monthly_summary(sb, "stepfun", month, monthly_bill["amount"], monthly_bill["gross"], monthly_bill["currency"], True)
                 self._send_sse({"type": "log", "message": f"[DONE] 完成，共处理 {len(stepfun_daily)} 天"})
                 self._send_sse({"type": "done"})
                 return
@@ -2018,7 +2122,15 @@ class Handler(BaseHTTPRequestHandler):
                 if result.get("bill_amount") is not None:
                     amt = result['bill_amount']
                     currency = result.get('bill_currency', 'CNY')
-                    log_msg = f"✓ {day} | 金额: {amt:.4f} {currency}"
+                    if result.get("ai_amount") is not None or result.get("non_ai_amount") is not None:
+                        ai = result.get('ai_amount', 0)
+                        nai = result.get('non_ai_amount', 0)
+                        tk = result.get('token_total', 0)
+                        log_msg = f"✓ {day} | AI: {ai:.2f} | 非AI: {nai:.2f} | 合计: {amt:.4f} {currency}"
+                        if tk > 0:
+                            log_msg += f" | Token: {tk:,}"
+                    else:
+                        log_msg = f"✓ {day} | 金额: {amt:.4f} {currency}"
                     self._send_sse({"type": "log", "message": log_msg})
                 elif "total_tokens" in result:
                     tokens = result['total_tokens']
@@ -2101,8 +2213,12 @@ class Handler(BaseHTTPRequestHandler):
                 "total_tokens": total_tokens,
             }
             insert_daily_row(sb, row)
+            # 写入金额到 bill_daily_summary
+            if total_cost > 0:
+                upsert_bill_daily_summary(sb, "stepfun", day, total_cost, total_cost, cost_currency, is_ai_cost=True)
             if write_summary:
                 week_start, week_end = week_bounds(day_date)
+                # Token 周/月汇总
                 weekly = sum_token_daily(sb, "stepfun", week_start.isoformat(), week_end.isoformat())
                 upsert_weekly_with_id(sb, "stepfun", week_start.isoformat(), week_end.isoformat(), weekly)
                 month = day[:7]
@@ -2110,6 +2226,13 @@ class Handler(BaseHTTPRequestHandler):
                 month_end = (datetime.fromisoformat(month_start).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
                 monthly = sum_token_daily(sb, "stepfun", month_start, month_end.isoformat())
                 upsert_monthly_with_id(sb, "stepfun", month, monthly)
+                # 账单 周/月汇总
+                weekly_bill = sum_bill_daily(sb, "stepfun", True, week_start.isoformat(), week_end.isoformat())
+                if weekly_bill:
+                    upsert_bill_weekly_summary(sb, "stepfun", week_start.isoformat(), week_end.isoformat(), weekly_bill["amount"], weekly_bill["gross"], weekly_bill["currency"], True)
+                monthly_bill = sum_bill_daily(sb, "stepfun", True, month_start, month_end.isoformat())
+                if monthly_bill:
+                    upsert_bill_monthly_summary(sb, "stepfun", month, monthly_bill["amount"], monthly_bill["gross"], monthly_bill["currency"], True)
             return {"day": day, "total_tokens": total_tokens, "total_cost": total_cost, "cost_currency": cost_currency}
         
         elif vendor == "aliyun_bill":
@@ -2208,6 +2331,7 @@ class Handler(BaseHTTPRequestHandler):
             non_ai_amount = summary.get("non_ai_amount", 0.0)
             non_ai_gross = summary.get("non_ai_gross", 0.0)
             currency = summary.get("currency", "CNY")
+            token_total = summary.get("token_total", 0)
             print(f"[OK] volcengine_bill day={day} AI={ai_amount} 非AI={non_ai_amount} gross={summary.get('gross', 0.0)} currency={currency} rows={len(rows)}")
             # 先删除旧数据
             delete_bill_daily_by_vendor(sb, "volcengine", day)
@@ -2217,6 +2341,27 @@ class Handler(BaseHTTPRequestHandler):
             # 非 AI 部分入库
             if non_ai_amount > 0 or non_ai_gross > 0:
                 upsert_bill_daily_summary(sb, "volcengine", day, non_ai_amount, non_ai_gross, currency, is_ai_cost=False)
+            # 入库 Token 用量
+            if token_total > 0:
+                token_row = {
+                    "day": day,
+                    "vendor": "volcengine",
+                    "model_id": "doubao",
+                    "project_id": None,
+                    "input_tokens": summary.get("token_input", 0),
+                    "output_tokens": summary.get("token_output", 0),
+                    "cache_tokens": 0,
+                    "total_tokens": token_total,
+                    "extra_metrics": {
+                        "token_rows": summary.get("token_rows", []),
+                    },
+                    "raw": None,
+                    "remark": "from volcengine bill api (doubao)",
+                    "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+                }
+                delete_existing_daily(sb, day, "volcengine", None)
+                insert_daily_row(sb, token_row)
+                print(f"[OK] volcengine token day={day} total={token_total} input={summary.get('token_input', 0)} output={summary.get('token_output', 0)}")
             if write_summary:
                 week_start, week_end = week_bounds(day_date)
                 # AI 周/月汇总
@@ -2236,7 +2381,15 @@ class Handler(BaseHTTPRequestHandler):
                 monthly_non_ai = sum_bill_daily(sb, "volcengine", False, month_start, month_end.isoformat())
                 if monthly_non_ai:
                     upsert_bill_monthly_summary(sb, "volcengine", month, monthly_non_ai["amount"], monthly_non_ai["gross"], monthly_non_ai["currency"], False)
-            return {"day": day, "bill_amount": ai_amount + non_ai_amount, "bill_gross_amount": ai_gross + non_ai_gross, "bill_currency": currency, "raw": rows}
+                # Token 周/月汇总
+                if token_total > 0:
+                    weekly_token = sum_token_daily(sb, "volcengine", week_start.isoformat(), week_end.isoformat())
+                    if weekly_token >= 0:
+                        upsert_weekly_with_id(sb, "volcengine", week_start.isoformat(), week_end.isoformat(), weekly_token)
+                    monthly_token = sum_token_daily(sb, "volcengine", month_start, month_end.isoformat())
+                    if monthly_token >= 0:
+                        upsert_monthly_with_id(sb, "volcengine", month, monthly_token)
+            return {"day": day, "bill_amount": ai_amount + non_ai_amount, "bill_gross_amount": ai_gross + non_ai_gross, "bill_currency": currency, "ai_amount": ai_amount, "non_ai_amount": non_ai_amount, "token_total": token_total, "raw": rows}
         
         elif vendor == "tianyancha_bill":
             day_date = datetime.fromisoformat(day).date()
@@ -2363,6 +2516,26 @@ class Handler(BaseHTTPRequestHandler):
             return {"day": day, "total_tokens": 0, "raw": {"error": f"unknown vendor: {vendor}"}}
 
     def do_POST(self):
+        # 处理登录
+        if self.path == "/login":
+            raw = read_body(self)
+            form = parse_qs(raw.decode("utf-8"))
+            password = (form.get("password") or [""])[0].strip()
+            if password == LOGIN_PASSWORD:
+                token = _generate_login_token()
+                self.send_response(302)
+                self.send_header("Set-Cookie", f"ops_token={token}; Path=/; HttpOnly; Max-Age=86400")
+                self.send_header("Location", "/")
+                self.end_headers()
+            else:
+                self._send_login_page("密码错误，请重试")
+            return
+
+        # 其他 POST 接口需要登录
+        if not self._is_logged_in():
+            self._send_login_page()
+            return
+
         if self.path != "/fetch":
             self.send_error(404)
             return

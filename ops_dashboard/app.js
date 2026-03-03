@@ -181,10 +181,12 @@ const els = {
   aliyunTokenTable: document.getElementById("aliyunTokenTable"),
   // AWS
   awsBillStatus: document.getElementById("awsBillStatus"),
+  awsBillGross: document.getElementById("awsBillGross"),
   awsBillTotal: document.getElementById("awsBillTotal"),
   awsBillRows: document.getElementById("awsBillRows"),
   awsBillTable: document.getElementById("awsBillTable"),
   awsOverviewStatus: document.getElementById("awsOverviewStatus"),
+  awsOverviewGross: document.getElementById("awsOverviewGross"),
   awsOverviewTotal: document.getElementById("awsOverviewTotal"),
   awsOverviewRows: document.getElementById("awsOverviewRows"),
   // 天眼查
@@ -366,11 +368,14 @@ function setDateRange(range) {
   }
 }
 
+let _cachedClient = null;
 function buildClient() {
+  if (_cachedClient) return _cachedClient;
   if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
     throw new Error("请先配置 config.js 中的 Supabase 信息");
   }
-  return window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  _cachedClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  return _cachedClient;
 }
 
 // 渲染表格
@@ -443,6 +448,26 @@ function renderDailyBillTable(rows, tableEl) {
     tr.innerHTML = `
       <td>${row.billing_date}</td>
       <td>${row.is_ai_cost ? '<span class="tag tag-ai">AI</span>' : '<span class="tag tag-nonai">非AI</span>'}</td>
+      <td class="right">${formatCurrency(row.amount, currency)}</td>
+      <td>${currency}</td>
+    `;
+    tableEl.appendChild(tr);
+  });
+}
+
+function renderAwsBillTable(rows, tableEl) {
+  tableEl.innerHTML = "";
+  if (!rows.length) {
+    tableEl.innerHTML = '<tr><td colspan="5" class="muted">暂无数据</td></tr>';
+    return;
+  }
+  rows.forEach((row) => {
+    const currency = row.currency || "USD";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${row.billing_date}</td>
+      <td>${row.is_ai_cost ? '<span class="tag tag-ai">AI</span>' : '<span class="tag tag-nonai">非AI</span>'}</td>
+      <td class="right">${formatCurrency(row.gross_amount, currency)}</td>
       <td class="right">${formatCurrency(row.amount, currency)}</td>
       <td>${currency}</td>
     `;
@@ -677,159 +702,59 @@ function toVendorName(code) {
   return VENDOR_NAME_MAP[code?.toLowerCase()] || code || "-";
 }
 
-async function loadTokenData(client, startDate, endDate, vendorCosts) {
+async function loadAllTokenAndDmxapi(client, startDate, endDate) {
   setStatus(els.tokenStatus, "加载中...");
-
-  // 查询日表数据
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("llm_token_daily_usage")
-    .select("day,vendor,total_tokens")
-    .gte("day", startDate)
-    .lte("day", endDate);
-
-  if (error) throw error;
-
-  // 查询 DMXAPI 周表数据（DMXAPI 是手工录入周数据，不在日表中）
-  const { data: dmxWeekly, error: dmxError } = await client
-    .schema("financial_hub_prod")
-    .from("llm_token_weekly_usage")
-    .select("week_start,week_end,token_total")
-    .eq("vendor_code", "dmxapi")
-    .gte("week_start", startDate)
-    .lte("week_end", endDate);
-
-  if (dmxError) throw dmxError;
-
-  const vendorMap = new Map();
-  let totalTokens = 0;
-
-  data.forEach((row) => {
-    const tokens = Number(row.total_tokens || 0);
-    totalTokens += tokens;
-    // Token 表中的 "aliyun" 实际是百炼 token 数据，统一映射为 "aliyun_bailian"
-    let vendor = (row.vendor || "").toLowerCase();
-    if (vendor === "aliyun") vendor = "aliyun_bailian";
-    if (!vendorMap.has(vendor)) {
-      vendorMap.set(vendor, { tokens: 0, cost: null });
-    }
-    vendorMap.get(vendor).tokens += tokens;
-  });
-
-  // 加入 DMXAPI 周表数据
-  if (dmxWeekly && dmxWeekly.length > 0) {
-    const dmxTokens = dmxWeekly.reduce((sum, row) => sum + Number(row.token_total || 0), 0);
-    totalTokens += dmxTokens;
-    vendorMap.set("dmxapi", { tokens: dmxTokens, cost: vendorCosts.dmxapi || null });
-  }
-
-  // 关联金额（aliyun_bailian 使用阿里云 sfm 的金额）
-  if (vendorMap.has("aliyun_bailian")) vendorMap.get("aliyun_bailian").cost = vendorCosts.aliyun || 0;
-  if (vendorMap.has("volcengine")) vendorMap.get("volcengine").cost = vendorCosts.volcengine || 0;
-  if (vendorMap.has("stepfun")) vendorMap.get("stepfun").cost = vendorCosts.stepfun || 0;
-  if (vendorMap.has("deepseek")) vendorMap.get("deepseek").cost = vendorCosts.deepseek || 0;
-  if (vendorMap.has("moonshot")) vendorMap.get("moonshot").cost = vendorCosts.moonshot || 0;
-
-  const vendorRows = Array.from(vendorMap.entries())
-    .map(([vendor, d]) => ({
-      vendor: toVendorName(vendor),
-      vendorCode: vendor,
-      total_tokens: d.tokens,
-      cost: d.cost,
-    }))
-    .sort((a, b) => b.total_tokens - a.total_tokens);
-
-  let totalCost = 0;
-  vendorRows.forEach((row) => {
-    if (row.cost !== null) totalCost += row.cost;
-  });
-
-  els.tokenTotal.textContent = formatTokenYi(totalTokens);
-  els.tokenTotalCost.textContent = formatCurrency(totalCost);
-  els.tokenVendorCount.textContent = formatNumber(vendorRows.length);
-  renderTokenTable(vendorRows);
-  setStatus(els.tokenStatus, `${data.length} 条`);
-
-  // 返回各供应商的 token 数据
-  const vendorTokens = {};
-  vendorMap.forEach((v, k) => { vendorTokens[k] = v.tokens; });
-
-  return { totalTokens, totalCost, vendorTokens };
-}
-
-async function loadAliyunTokenDaily(client, startDate, endDate) {
   setStatus(els.aliyunTokenStatus, "加载中...");
-
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("llm_token_daily_usage")
-    .select("day,project_id,total_tokens")
-    .eq("vendor", "aliyun")
-    .gte("day", startDate)
-    .lte("day", endDate)
-    .order("day", { ascending: false });
-
-  if (error) throw error;
-
-  const total = data.reduce((sum, row) => sum + Number(row.total_tokens || 0), 0);
-
-  els.aliyunTokenTotal.textContent = formatTokenYi(total);
-  els.aliyunTokenRows.textContent = formatNumber(data.length);
-  renderAliyunTokenTable(data);
-  setStatus(els.aliyunTokenStatus, `${data.length} 条`);
-}
-
-async function loadDmxapiWeekly(client, startDate, endDate) {
   setStatus(els.dmxapiStatus, "加载中...");
 
-  // 获取 Token 数据
-  const { data: tokenData, error: tokenError } = await client
-    .schema("financial_hub_prod")
-    .from("llm_token_weekly_usage")
-    .select("week_start,week_end,token_total")
-    .eq("vendor_code", "dmxapi")
-    .gte("week_start", startDate)
-    .lte("week_end", endDate)
-    .order("week_start", { ascending: false });
+  const [tokenRes, dmxTokenRes, dmxBillRes] = await Promise.all([
+    client.schema("financial_hub_prod").from("llm_token_daily_usage")
+      .select("day,vendor,project_id,total_tokens")
+      .gte("day", startDate).lte("day", endDate).order("day", { ascending: false }),
+    client.schema("financial_hub_prod").from("llm_token_weekly_usage")
+      .select("week_start,week_end,token_total")
+      .eq("vendor_code", "dmxapi")
+      .gte("week_start", startDate).lte("week_end", endDate)
+      .order("week_start", { ascending: false }),
+    client.schema("financial_hub_prod").from("bill_weekly_summary")
+      .select("week_start,week_end,amount,currency")
+      .eq("vendor_code", "dmxapi")
+      .gte("week_start", startDate).lte("week_end", endDate)
+      .order("week_start", { ascending: false }),
+  ]);
 
-  if (tokenError) throw tokenError;
+  if (tokenRes.error) throw tokenRes.error;
+  if (dmxTokenRes.error) throw dmxTokenRes.error;
+  if (dmxBillRes.error) throw dmxBillRes.error;
 
-  // 获取金额数据
-  const { data: billData, error: billError } = await client
-    .schema("financial_hub_prod")
-    .from("bill_weekly_summary")
-    .select("week_start,week_end,amount,currency")
-    .eq("vendor_code", "dmxapi")
-    .gte("week_start", startDate)
-    .lte("week_end", endDate)
-    .order("week_start", { ascending: false });
+  const allTokenData = tokenRes.data || [];
+  const dmxTokenData = dmxTokenRes.data || [];
+  const dmxBillData = dmxBillRes.data || [];
 
-  if (billError) throw billError;
+  // --- 阿里云 Token 明细（vendor='aliyun' 子集） ---
+  const aliyunRows = allTokenData.filter((r) => (r.vendor || "").toLowerCase() === "aliyun");
+  const aliyunTotal = aliyunRows.reduce((s, r) => s + Number(r.total_tokens || 0), 0);
+  els.aliyunTokenTotal.textContent = formatTokenYi(aliyunTotal);
+  els.aliyunTokenRows.textContent = formatNumber(aliyunRows.length);
+  renderAliyunTokenTable(aliyunRows);
+  setStatus(els.aliyunTokenStatus, `${aliyunRows.length} 条`);
 
-  // 合并数据
-  const billMap = new Map();
-  (billData || []).forEach((row) => {
-    const key = `${row.week_start}_${row.week_end}`;
-    billMap.set(key, row);
-  });
+  // --- DMXAPI 周表渲染 ---
+  const dmxBillMap = new Map();
+  dmxBillData.forEach((r) => dmxBillMap.set(`${r.week_start}_${r.week_end}`, r));
+  const dmxTotalTokens = dmxTokenData.reduce((s, r) => s + Number(r.token_total || 0), 0);
+  const dmxTotalAmount = dmxBillData.reduce((s, r) => s + Number(r.amount || 0), 0);
 
-  const totalTokens = (tokenData || []).reduce((sum, row) => sum + Number(row.token_total || 0), 0);
-  const totalAmount = (billData || []).reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  els.dmxapiTotal.textContent = formatTokenYi(dmxTotalTokens);
+  els.dmxapiWeeks.textContent = formatNumber(dmxTokenData.length);
+  if (els.dmxapiAmount) els.dmxapiAmount.textContent = formatCurrency(dmxTotalAmount);
 
-  els.dmxapiTotal.textContent = formatTokenYi(totalTokens);
-  els.dmxapiWeeks.textContent = formatNumber((tokenData || []).length);
-  if (els.dmxapiAmount) {
-    els.dmxapiAmount.textContent = formatCurrency(totalAmount);
-  }
-  
-  // 渲染表格
   els.dmxapiTable.innerHTML = "";
-  if (!tokenData || tokenData.length === 0) {
+  if (dmxTokenData.length === 0) {
     els.dmxapiTable.innerHTML = '<tr><td colspan="4" class="muted">暂无数据</td></tr>';
   } else {
-    tokenData.forEach((row) => {
-      const key = `${row.week_start}_${row.week_end}`;
-      const bill = billMap.get(key);
+    dmxTokenData.forEach((row) => {
+      const bill = dmxBillMap.get(`${row.week_start}_${row.week_end}`);
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${row.week_start || "-"}</td>
@@ -840,191 +765,186 @@ async function loadDmxapiWeekly(client, startDate, endDate) {
       els.dmxapiTable.appendChild(tr);
     });
   }
-  setStatus(els.dmxapiStatus, `${(tokenData || []).length} 周`);
-  
-  return { dmxapiTotal: totalTokens, dmxapiAmount: totalAmount };
+  setStatus(els.dmxapiStatus, `${dmxTokenData.length} 周`);
+
+  return {
+    _allTokenData: allTokenData,
+    _dmxTokenData: dmxTokenData,
+    dmxapiTotal: dmxTotalTokens,
+    dmxapiAmount: dmxTotalAmount,
+  };
 }
 
-async function loadAwsBillDaily(client, startDate, endDate) {
-  setStatus(els.awsBillStatus, "加载中...");
-  setStatus(els.awsOverviewStatus, "加载中...");
+function processTokenSummary(allTokenData, dmxTokenData, vendorCosts) {
+  const vendorMap = new Map();
+  let totalTokens = 0;
 
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("bill_daily_summary")
-    .select("billing_date,is_ai_cost,amount,gross_amount,currency")
-    .eq("vendor_code", "aws")
-    .gte("billing_date", startDate)
-    .lte("billing_date", endDate)
-    .order("billing_date", { ascending: false });
-
-  if (error) throw error;
-
-  let total = 0, currency = "USD";
-  (data || []).forEach((row) => {
-    total += Number(row.amount || 0);
-    if (row.currency) currency = row.currency;
+  allTokenData.forEach((row) => {
+    const tokens = Number(row.total_tokens || 0);
+    totalTokens += tokens;
+    let vendor = (row.vendor || "").toLowerCase();
+    if (vendor === "aliyun") vendor = "aliyun_bailian";
+    if (!vendorMap.has(vendor)) vendorMap.set(vendor, { tokens: 0, cost: null });
+    vendorMap.get(vendor).tokens += tokens;
   });
 
-  els.awsBillTotal.textContent = formatCurrency(total, currency);
-  els.awsBillRows.textContent = formatNumber(data.length);
-  renderDailyBillTable(data || [], els.awsBillTable);
-  setStatus(els.awsBillStatus, `${data.length} 条`);
+  if (dmxTokenData.length > 0) {
+    const dmxTokens = dmxTokenData.reduce((s, r) => s + Number(r.token_total || 0), 0);
+    totalTokens += dmxTokens;
+    vendorMap.set("dmxapi", { tokens: dmxTokens, cost: vendorCosts.dmxapi || null });
+  }
 
-  els.awsOverviewTotal.textContent = formatCurrency(total, currency);
-  els.awsOverviewRows.textContent = formatNumber(data.length);
-  setStatus(els.awsOverviewStatus, `${data.length} 条`);
+  if (vendorMap.has("aliyun_bailian")) vendorMap.get("aliyun_bailian").cost = vendorCosts.aliyun || 0;
+  if (vendorMap.has("volcengine")) vendorMap.get("volcengine").cost = vendorCosts.volcengine || 0;
+  if (vendorMap.has("stepfun")) vendorMap.get("stepfun").cost = vendorCosts.stepfun || 0;
+  if (vendorMap.has("deepseek")) vendorMap.get("deepseek").cost = vendorCosts.deepseek || 0;
+  if (vendorMap.has("moonshot")) vendorMap.get("moonshot").cost = vendorCosts.moonshot || 0;
 
-  state.awsData = { total, currency };
-  return { awsTotal: total };
+  const vendorRows = Array.from(vendorMap.entries())
+    .map(([vendor, d]) => ({ vendor: toVendorName(vendor), vendorCode: vendor, total_tokens: d.tokens, cost: d.cost }))
+    .sort((a, b) => b.total_tokens - a.total_tokens);
+
+  let totalCost = 0;
+  vendorRows.forEach((r) => { if (r.cost !== null) totalCost += r.cost; });
+
+  els.tokenTotal.textContent = formatTokenYi(totalTokens);
+  els.tokenTotalCost.textContent = formatCurrency(totalCost);
+  els.tokenVendorCount.textContent = formatNumber(vendorRows.length);
+  renderTokenTable(vendorRows);
+  setStatus(els.tokenStatus, `${allTokenData.length} 条`);
+
+  const vendorTokens = {};
+  vendorMap.forEach((v, k) => { vendorTokens[k] = v.tokens; });
+  return { totalTokens, totalCost, vendorTokens };
 }
 
-async function loadVolcBillDaily(client, startDate, endDate) {
-  setStatus(els.volcBillStatus, "加载中...");
-  setStatus(els.volcOverviewStatus, "加载中...");
-
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("bill_daily_summary")
-    .select("billing_date,is_ai_cost,amount,gross_amount,currency")
-    .eq("vendor_code", "volcengine")
-    .gte("billing_date", startDate)
-    .lte("billing_date", endDate)
-    .order("billing_date", { ascending: false });
-
-  if (error) throw error;
-
-  let total = 0, aiTotal = 0, nonAiTotal = 0, currency = "CNY";
-  (data || []).forEach((row) => {
-    const amt = Number(row.amount || 0);
-    total += amt;
-    if (row.is_ai_cost) aiTotal += amt;
-    else nonAiTotal += amt;
-    if (row.currency) currency = row.currency;
-  });
-
-  els.volcBillTotal.textContent = formatCurrency(total, currency);
-  els.volcBillRows.textContent = formatNumber(data.length);
-  renderDailyBillTable(data || [], els.volcBillTable);
-  setStatus(els.volcBillStatus, `${data.length} 条`);
-
-  els.volcOverviewTotal.textContent = formatCurrency(total, currency);
-  els.volcOverviewAi.textContent = formatCurrency(aiTotal, currency);
-  els.volcOverviewNonAi.textContent = formatCurrency(nonAiTotal, currency);
-  els.volcOverviewRows.textContent = formatNumber(data.length);
-  setStatus(els.volcOverviewStatus, `${data.length} 条`);
-
-  state.volcData = { total, aiTotal, nonAiTotal };
-  return { volcAiAmount: aiTotal, volcNonAiAmount: nonAiTotal };
-}
-
-async function loadTianyanchaBillDaily(client, startDate, endDate) {
-  setStatus(els.tianBillStatus, "加载中...");
-  setStatus(els.tianOverviewStatus, "加载中...");
-
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("bill_daily_summary")
-    .select("billing_date,is_ai_cost,amount,gross_amount,currency")
-    .eq("vendor_code", "tianyancha")
-    .gte("billing_date", startDate)
-    .lte("billing_date", endDate)
-    .order("billing_date", { ascending: false });
-
-  if (error) throw error;
-
-  let total = 0, currency = "CNY";
-  const rows = (data || []).map((row) => ({ ...row, is_ai_cost: false }));
-  rows.forEach((row) => {
-    total += Number(row.amount || 0);
-    if (row.currency) currency = row.currency;
-  });
-
-  els.tianBillTotal.textContent = formatCurrency(total, currency);
-  els.tianBillRows.textContent = formatNumber(rows.length);
-  renderDailyBillTable(rows, els.tianBillTable);
-  setStatus(els.tianBillStatus, `${rows.length} 条`);
-
-  els.tianOverviewTotal.textContent = formatCurrency(total, currency);
-  els.tianOverviewRows.textContent = formatNumber(rows.length);
-  setStatus(els.tianOverviewStatus, `${rows.length} 条`);
-
-  state.tianData = { total };
-  return { tianTotal: total };
-}
-
-async function loadMoonshotBillDaily(client, startDate, endDate) {
+async function loadAllVendorBillDaily(client, startDate, endDate) {
+  const vendorCodes = ["aliyun", "aws", "volcengine", "tianyancha", "moonshot", "deepseek", "stepfun", "textin"];
+  setStatus(els.awsBillStatus, "加载中..."); setStatus(els.awsOverviewStatus, "加载中...");
+  setStatus(els.volcBillStatus, "加载中..."); setStatus(els.volcOverviewStatus, "加载中...");
+  setStatus(els.tianBillStatus, "加载中..."); setStatus(els.tianOverviewStatus, "加载中...");
   setStatus(els.moonshotOverviewStatus, "加载中...");
-
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("bill_daily_summary")
-    .select("billing_date,is_ai_cost,amount,gross_amount,currency")
-    .eq("vendor_code", "moonshot")
-    .gte("billing_date", startDate)
-    .lte("billing_date", endDate);
-
-  if (error) throw error;
-
-  let total = 0, currency = "CNY";
-  (data || []).forEach((row) => {
-    total += Number(row.amount || 0);
-    if (row.currency) currency = row.currency;
-  });
-
-  els.moonshotOverviewTotal.textContent = formatCurrency(total, currency);
-  els.moonshotOverviewRows.textContent = formatNumber(data.length);
-  setStatus(els.moonshotOverviewStatus, `${data.length} 条`);
-
-  state.moonshotData = { total };
-  return { moonshotTotal: total };
-}
-
-async function loadDeepseekBillDaily(client, startDate, endDate) {
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("bill_daily_summary")
-    .select("billing_date,is_ai_cost,amount,gross_amount,currency")
-    .eq("vendor_code", "deepseek")
-    .gte("billing_date", startDate)
-    .lte("billing_date", endDate);
-
-  if (error) throw error;
-
-  let total = 0, currency = "CNY";
-  (data || []).forEach((row) => {
-    total += Number(row.amount || 0);
-    if (row.currency) currency = row.currency;
-  });
-
-  return { deepseekAmount: total };
-}
-
-async function loadStepfunBillDaily(client, startDate, endDate) {
   setStatus(els.stepfunOverviewStatus, "加载中...");
+  setStatus(els.textinOverviewStatus, "加载中...");
 
   const { data, error } = await client
     .schema("financial_hub_prod")
     .from("bill_daily_summary")
-    .select("billing_date,is_ai_cost,amount,gross_amount,currency")
-    .eq("vendor_code", "stepfun")
+    .select("vendor_code,billing_date,is_ai_cost,amount,gross_amount,currency")
+    .in("vendor_code", vendorCodes)
     .gte("billing_date", startDate)
-    .lte("billing_date", endDate);
+    .lte("billing_date", endDate)
+    .order("billing_date", { ascending: false });
 
   if (error) throw error;
 
-  let total = 0, currency = "CNY";
+  const byVendor = {};
+  vendorCodes.forEach((v) => { byVendor[v] = []; });
   (data || []).forEach((row) => {
-    total += Number(row.amount || 0);
-    if (row.currency) currency = row.currency;
+    const vc = row.vendor_code;
+    if (byVendor[vc]) byVendor[vc].push(row);
   });
 
-  els.stepfunOverviewTotal.textContent = formatCurrency(total, currency);
-  els.stepfunOverviewRows.textContent = formatNumber(data.length);
-  setStatus(els.stepfunOverviewStatus, `${data.length} 条`);
+  // --- Aliyun (从 bill_daily_summary 获取 AI/非AI 汇总，不需要查 aliyun_bill_daily) ---
+  const aliyunRows = byVendor.aliyun;
+  let aliyunAi = 0, aliyunNonAi = 0;
+  aliyunRows.forEach((row) => {
+    const amt = Number(row.amount || 0);
+    if (row.is_ai_cost) aliyunAi += amt; else aliyunNonAi += amt;
+  });
 
-  state.stepfunData = { total };
-  return { stepfunAmount: total };
+  // --- AWS ---
+  const awsRows = byVendor.aws;
+  let awsTotal = 0, awsGross = 0, awsCurrency = "USD";
+  awsRows.forEach((row) => {
+    awsTotal += Number(row.amount || 0);
+    awsGross += Number(row.gross_amount || 0);
+    if (row.currency) awsCurrency = row.currency;
+  });
+  els.awsBillGross.textContent = formatCurrency(awsGross, awsCurrency);
+  els.awsBillTotal.textContent = formatCurrency(awsTotal, awsCurrency);
+  els.awsBillRows.textContent = formatNumber(awsRows.length);
+  renderAwsBillTable(awsRows, els.awsBillTable);
+  setStatus(els.awsBillStatus, `${awsRows.length} 条`);
+  els.awsOverviewGross.textContent = formatCurrency(awsGross, awsCurrency);
+  els.awsOverviewTotal.textContent = formatCurrency(awsTotal, awsCurrency);
+  els.awsOverviewRows.textContent = formatNumber(awsRows.length);
+  setStatus(els.awsOverviewStatus, `${awsRows.length} 条`);
+  state.awsData = { total: awsTotal, totalGross: awsGross, currency: awsCurrency };
+
+  // --- Volcengine ---
+  const volcRows = byVendor.volcengine;
+  let volcTotal = 0, volcAi = 0, volcNonAi = 0, volcCurrency = "CNY";
+  volcRows.forEach((row) => {
+    const amt = Number(row.amount || 0);
+    volcTotal += amt;
+    if (row.is_ai_cost) volcAi += amt; else volcNonAi += amt;
+    if (row.currency) volcCurrency = row.currency;
+  });
+  els.volcBillTotal.textContent = formatCurrency(volcTotal, volcCurrency);
+  els.volcBillRows.textContent = formatNumber(volcRows.length);
+  renderDailyBillTable(volcRows, els.volcBillTable);
+  setStatus(els.volcBillStatus, `${volcRows.length} 条`);
+  els.volcOverviewTotal.textContent = formatCurrency(volcTotal, volcCurrency);
+  els.volcOverviewAi.textContent = formatCurrency(volcAi, volcCurrency);
+  els.volcOverviewNonAi.textContent = formatCurrency(volcNonAi, volcCurrency);
+  els.volcOverviewRows.textContent = formatNumber(volcRows.length);
+  setStatus(els.volcOverviewStatus, `${volcRows.length} 条`);
+  state.volcData = { total: volcTotal, aiTotal: volcAi, nonAiTotal: volcNonAi };
+
+  // --- Tianyancha ---
+  const tianRows = byVendor.tianyancha.map((row) => ({ ...row, is_ai_cost: false }));
+  let tianTotal = 0, tianCurrency = "CNY";
+  tianRows.forEach((row) => {
+    tianTotal += Number(row.amount || 0);
+    if (row.currency) tianCurrency = row.currency;
+  });
+  els.tianBillTotal.textContent = formatCurrency(tianTotal, tianCurrency);
+  els.tianBillRows.textContent = formatNumber(tianRows.length);
+  renderDailyBillTable(tianRows, els.tianBillTable);
+  setStatus(els.tianBillStatus, `${tianRows.length} 条`);
+  els.tianOverviewTotal.textContent = formatCurrency(tianTotal, tianCurrency);
+  els.tianOverviewRows.textContent = formatNumber(tianRows.length);
+  setStatus(els.tianOverviewStatus, `${tianRows.length} 条`);
+  state.tianData = { total: tianTotal };
+
+  // --- 简单汇总供应商 ---
+  function sumVendor(rows, defaultCurrency) {
+    let t = 0, c = defaultCurrency;
+    rows.forEach((row) => { t += Number(row.amount || 0); if (row.currency) c = row.currency; });
+    return { total: t, currency: c, count: rows.length };
+  }
+
+  const moonshot = sumVendor(byVendor.moonshot, "CNY");
+  els.moonshotOverviewTotal.textContent = formatCurrency(moonshot.total, moonshot.currency);
+  els.moonshotOverviewRows.textContent = formatNumber(moonshot.count);
+  setStatus(els.moonshotOverviewStatus, `${moonshot.count} 条`);
+  state.moonshotData = { total: moonshot.total };
+
+  const deepseek = sumVendor(byVendor.deepseek, "CNY");
+
+  const stepfun = sumVendor(byVendor.stepfun, "CNY");
+  els.stepfunOverviewTotal.textContent = formatCurrency(stepfun.total, stepfun.currency);
+  els.stepfunOverviewRows.textContent = formatNumber(stepfun.count);
+  setStatus(els.stepfunOverviewStatus, `${stepfun.count} 条`);
+  state.stepfunData = { total: stepfun.total };
+
+  const textin = sumVendor(byVendor.textin, "CNY");
+  els.textinOverviewTotal.textContent = formatCurrency(textin.total, textin.currency);
+  els.textinOverviewRows.textContent = formatNumber(textin.count);
+  setStatus(els.textinOverviewStatus, `${textin.count} 条`);
+  state.textinData = { total: textin.total };
+
+  return {
+    aliyunSfmAmount: aliyunAi, aliyunNonAi: aliyunNonAi,
+    awsTotal: awsTotal,
+    volcAiAmount: volcAi, volcNonAiAmount: volcNonAi,
+    tianTotal: tianTotal,
+    moonshotTotal: moonshot.total,
+    deepseekAmount: deepseek.total,
+    stepfunAmount: stepfun.total,
+    textinTotal: textin.total,
+  };
 }
 
 async function loadAuthingBillMonthly(client, startDate, endDate) {
@@ -1055,33 +975,6 @@ async function loadAuthingBillMonthly(client, startDate, endDate) {
 
   state.authingData = { total };
   return { authingTotal: total };
-}
-
-async function loadTextinBillDaily(client, startDate, endDate) {
-  setStatus(els.textinOverviewStatus, "加载中...");
-
-  const { data, error } = await client
-    .schema("financial_hub_prod")
-    .from("bill_daily_summary")
-    .select("billing_date,is_ai_cost,amount,currency")
-    .eq("vendor_code", "textin")
-    .gte("billing_date", startDate)
-    .lte("billing_date", endDate);
-
-  if (error) throw error;
-
-  let total = 0, currency = "CNY";
-  (data || []).forEach((row) => {
-    total += Number(row.amount || 0);
-    if (row.currency) currency = row.currency;
-  });
-
-  els.textinOverviewTotal.textContent = formatCurrency(total, currency);
-  els.textinOverviewRows.textContent = formatNumber(data.length);
-  setStatus(els.textinOverviewStatus, `${data.length} 条`);
-
-  state.textinData = { total };
-  return { textinTotal: total };
 }
 
 // 更新汇总
@@ -1176,58 +1069,63 @@ function showSummaryDetail(type) {
   showModal(title, content);
 }
 
+let _billDataLoaded = false;
+
+async function ensureBillDataLoaded() {
+  if (_billDataLoaded) return;
+  _billDataLoaded = true;
+  try {
+    const client = buildClient();
+    await loadBillData(client, els.startDate.value, els.endDate.value);
+  } catch (err) {
+    _billDataLoaded = false;
+    setError(err.message || "阿里云账单明细加载失败");
+  }
+}
+
 async function refresh() {
   try {
     setError("");
+    _billDataLoaded = false;
     const client = buildClient();
     const start = els.startDate.value;
     const end = els.endDate.value;
 
-    // 先加载账单数据
-    const [billResult, volcResult, stepfunResult, awsResult, tianResult, moonshotResult, textinResult, authingResult, deepseekResult] =
+    const [vendorBillResult, authingResult, tokenAndDmxResult] =
       await Promise.all([
-        loadBillData(client, start, end),
-        loadVolcBillDaily(client, start, end),
-        loadStepfunBillDaily(client, start, end),
-        loadAwsBillDaily(client, start, end),
-        loadTianyanchaBillDaily(client, start, end),
-        loadMoonshotBillDaily(client, start, end),
-        loadTextinBillDaily(client, start, end),
+        loadAllVendorBillDaily(client, start, end),
         loadAuthingBillMonthly(client, start, end),
-        loadDeepseekBillDaily(client, start, end),
+        loadAllTokenAndDmxapi(client, start, end),
       ]);
 
-    // 先加载 DMXAPI（周数据），以便在 loadTokenData 中合并显示
-    const dmxapiResult = await loadDmxapiWeekly(client, start, end);
-
     const vendorCosts = {
-      aliyun: billResult.aliyunSfmAmount,
-      volcengine: volcResult.volcAiAmount,
-      stepfun: stepfunResult.stepfunAmount,
-      deepseek: deepseekResult.deepseekAmount,
-      moonshot: moonshotResult.moonshotTotal,
-      dmxapi: dmxapiResult.dmxapiAmount || 0,
+      aliyun: vendorBillResult.aliyunSfmAmount,
+      volcengine: vendorBillResult.volcAiAmount,
+      stepfun: vendorBillResult.stepfunAmount,
+      deepseek: vendorBillResult.deepseekAmount,
+      moonshot: vendorBillResult.moonshotTotal,
+      dmxapi: tokenAndDmxResult.dmxapiAmount || 0,
     };
 
-    const tokenResult = await loadTokenData(client, start, end, vendorCosts);
-    await loadAliyunTokenDaily(client, start, end);
+    const tokenResult = processTokenSummary(
+      tokenAndDmxResult._allTokenData,
+      tokenAndDmxResult._dmxTokenData,
+      vendorCosts,
+    );
 
-    // 更新汇总
     updateSummary({
-      ...billResult,
-      ...volcResult,
-      ...stepfunResult,
-      ...awsResult,
-      ...tianResult,
-      ...moonshotResult,
-      ...textinResult,
+      ...vendorBillResult,
       ...authingResult,
-      ...deepseekResult,
-      ...dmxapiResult,
+      ...tokenAndDmxResult,
       ...tokenResult,
     });
 
     els.lastRefresh.textContent = new Date().toLocaleString("zh-CN");
+
+    const activeTab = document.querySelector(".tab.active");
+    if (activeTab && activeTab.dataset.tab === "bills") {
+      ensureBillDataLoaded();
+    }
   } catch (err) {
     setError(err.message || "数据加载失败");
   }
@@ -1255,6 +1153,7 @@ els.tabs.forEach((tab) => {
     Object.entries(els.tabPanels).forEach(([key, panel]) => {
       if (panel) panel.classList.toggle("active", key === tab.dataset.tab);
     });
+    if (tab.dataset.tab === "bills") ensureBillDataLoaded();
   });
 });
 
