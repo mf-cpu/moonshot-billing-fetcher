@@ -8,7 +8,7 @@ on:
     types: [submitted]
 
 permissions:
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   notify:
@@ -153,6 +153,17 @@ jobs:
             }
           }')
           rm -f "$ELEMENTS_FILE"
+
+          # 没有 P0 时自动 approve PR
+          if [ "$CARD_COLOR" != "red" ]; then
+            echo "无 P0 问题，自动 approve PR"
+            gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+              -f event="APPROVE" \
+              -f body="🦞 龙虾 CR Agent：Codex 审查通过，自动批准。" \
+              2>/dev/null && echo "自动 approve 成功" || echo "自动 approve 失败（可忽略）"
+          else
+            echo "有 P0 问题，需人工审批"
+          fi
 
           # 发送飞书（3 次重试）
           for i in 1 2 3; do
