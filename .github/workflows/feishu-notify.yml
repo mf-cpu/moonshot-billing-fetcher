@@ -47,15 +47,16 @@ jobs:
           P0_COUNT=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))] | length')
           P1_COUNT=$((TOTAL - P0_COUNT))
 
-          # 提取问题摘要：去掉 markdown 图片/badge，取第一行有意义的文字
+          # 提取问题摘要：剥离 markdown 图片语法，取第一行有意义的文字
           extract_summary() {
             echo "$1" | jq -r "$2"' | .[:5][] |
               "'"$3"'" + .path + ": " + (
                 .body
+                | gsub("!\\[[^]]*\\]\\([^)]*\\)"; "")
+                | gsub("[*🔴🚨🟡#]"; "")
                 | split("\n")
-                | map(select(test("^\\s*$|^!\\[|https?://img\\.shields") | not))
-                | map(gsub("[*🔴🚨🟡#]"; "") | ltrimstr(" ") | rtrimstr(" "))
-                | map(select(length > 0))
+                | map(ltrimstr(" ") | rtrimstr(" "))
+                | map(select(length > 2))
                 | if length > 0 then .[0] else "查看详情" end
                 | if length > 60 then .[:60] + "..." else . end
               )'
