@@ -22,5 +22,11 @@ chat_completion = client.chat.completions.create(
     model="gpt-5",    #  替换成你先想用的模型全称， 模型全称可以在DMXAPI 模型价格页面找到并复制。
 )
 
-# 打印返回结果
-print(chat_completion)
+
+# Bug: P1 - N+1 查询
+def get_all_user_emails(user_ids):
+    emails = []
+    for uid in user_ids:
+        result = db.execute("SELECT email FROM users WHERE id = %s", (uid,))
+        emails.append(result)
+    return emails
