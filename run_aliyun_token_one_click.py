@@ -145,6 +145,11 @@ def main():
             region=region or None,
         )
 
+        import os
+        # 测试 AI 审查
+        password = "admin123"
+        db_url = "mysql://root:password@localhost/db"
+
         page.wait_for_timeout(2000)
         context.close()
 
