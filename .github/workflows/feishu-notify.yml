@@ -1,5 +1,5 @@
 # Codex 审查完成后发飞书通知
-# 根据审查结果展示三色卡片：绿（通过）/ 黄（通过有建议）/ 红（未通过需审批）
+# 三色卡片：绿（通过）/ 黄（通过有建议）/ 红（未通过需审批）
 
 name: "🦞 飞书审查通知"
 
@@ -41,105 +41,110 @@ jobs:
           TOTAL=$(echo "$COMMENTS" | jq 'length')
 
           # 按 P0（必须修复）和 P1（建议修复）分类
-          P0_COMMENTS=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))]')
-          P0_COUNT=$(echo "$P0_COMMENTS" | jq 'length')
+          P0_COUNT=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))] | length')
           P1_COUNT=$((TOTAL - P0_COUNT))
 
-          # 生成 P0 问题摘要
-          P0_SUMMARY=""
+          # 生成问题摘要（最多显示 5 条）
+          SUMMARY_LINES=""
           if [ "$P0_COUNT" -gt 0 ]; then
-            P0_SUMMARY=$(echo "$P0_COMMENTS" | jq -r '.[] | "🔴 " + .path + ": " + (.body | split("\n")[0] | gsub("🔴|🚨|\\*\\*"; "") | ltrimstr(" ") | if length > 60 then .[:60] + "..." else . end)')
+            P0_TEXT=$(echo "$COMMENTS" | jq -r '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))] | .[:5][] | "🔴 " + .path + ": " + (.body | split("\n")[0] | gsub("[*🔴🚨]"; "") | ltrimstr(" ") | if length > 50 then .[:50] + "..." else . end)')
+            SUMMARY_LINES="$P0_TEXT"
           fi
-
-          # 生成 P1 问题摘要
-          P1_COMMENTS=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i") | not)]')
-          P1_SUMMARY=""
           if [ "$P1_COUNT" -gt 0 ]; then
-            P1_SUMMARY=$(echo "$P1_COMMENTS" | jq -r '.[] | "🟡 " + .path + ": " + (.body | split("\n")[0] | gsub("🟡|\\*\\*"; "") | ltrimstr(" ") | if length > 60 then .[:60] + "..." else . end)')
+            P1_TEXT=$(echo "$COMMENTS" | jq -r '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i") | not)] | .[:3][] | "🟡 " + .path + ": " + (.body | split("\n")[0] | gsub("[*🟡]"; "") | ltrimstr(" ") | if length > 50 then .[:50] + "..." else . end)')
+            if [ -n "$SUMMARY_LINES" ]; then
+              SUMMARY_LINES="$SUMMARY_LINES
+          $P1_TEXT"
+            else
+              SUMMARY_LINES="$P1_TEXT"
+            fi
           fi
 
           # 决定卡片颜色和结论
           if [ "$P0_COUNT" -gt 0 ]; then
             CARD_COLOR="red"
             CONCLUSION="❌ Codex 审查结论：未通过"
-            CONCLUSION_DETAIL="发现 ${P0_COUNT} 个必须修复问题，需人工审批才能合并"
+            DETAIL="发现 ${P0_COUNT} 个必须修复问题，需人工审批才能合并"
           elif [ "$P1_COUNT" -gt 0 ]; then
             CARD_COLOR="yellow"
             CONCLUSION="✅ Codex 审查结论：通过（有 ${P1_COUNT} 条建议）"
-            CONCLUSION_DETAIL="无必须修复问题，以下建议供参考"
+            DETAIL="无必须修复问题，以下建议供参考"
           else
             CARD_COLOR="green"
             CONCLUSION="✅ Codex 审查结论：通过"
-            CONCLUSION_DETAIL="未发现问题，可直接合并"
+            DETAIL="未发现问题，可直接合并"
           fi
 
-          # 合并问题摘要
-          ALL_SUMMARY=""
-          if [ -n "$P0_SUMMARY" ]; then
-            ALL_SUMMARY="$P0_SUMMARY"
-          fi
-          if [ -n "$P1_SUMMARY" ]; then
-            if [ -n "$ALL_SUMMARY" ]; then
-              ALL_SUMMARY="${ALL_SUMMARY}\n${P1_SUMMARY}"
-            else
-              ALL_SUMMARY="$P1_SUMMARY"
-            fi
-          fi
+          echo "卡片颜色: $CARD_COLOR, P0=$P0_COUNT, P1=$P1_COUNT"
 
-          SAFE_TITLE=$(echo "$PR_TITLE" | jq -Rs '.')
+          # 构建 elements 数组写入临时文件
+          ELEMENTS_FILE=$(mktemp)
 
-          # 构建问题详情区块（如果有问题的话）
-          ISSUES_ELEMENT=""
-          if [ -n "$ALL_SUMMARY" ]; then
-            SAFE_SUMMARY=$(printf '%s' "$ALL_SUMMARY" | jq -Rs '.')
-            ISSUES_ELEMENT=',{"tag":"div","text":{"tag":"lark_md","content":'"$SAFE_SUMMARY"'}}'
-          fi
-
-          # 构建按钮（红卡多一个"前往审批"按钮）
-          if [ "$CARD_COLOR" = "red" ]; then
-            BUTTONS='[{"tag":"button","text":{"tag":"plain_text","content":"查看 PR"},"type":"default","url":"'"$PR_URL"'"},{"tag":"button","text":{"tag":"plain_text","content":"前往审批"},"type":"primary","url":"'"$PR_URL"'/files"}]'
-          else
-            BUTTONS='[{"tag":"button","text":{"tag":"plain_text","content":"查看 PR"},"type":"primary","url":"'"$PR_URL"'"}]'
-          fi
-
-          # 构建完整卡片 JSON
-          CARD=$(jq -n \
-            --arg color "$CARD_COLOR" \
+          # 基础信息
+          jq -n \
             --arg repo "$REPO" \
             --arg author "$PR_AUTHOR" \
             --arg number "$PR_NUMBER" \
-            --argjson title "$SAFE_TITLE" \
+            --arg title "$PR_TITLE" \
             --arg adds "$ADDITIONS" \
             --arg dels "$DELETIONS" \
             --arg files "$CHANGED_FILES" \
             --arg conclusion "$CONCLUSION" \
-            --arg detail "$CONCLUSION_DETAIL" \
-            --argjson buttons "$BUTTONS" \
-            --argjson issues_el "[$ISSUES_ELEMENT]" \
-            '{
-              msg_type: "interactive",
-              card: {
-                header: {
-                  title: {tag: "plain_text", content: "🦞 龙虾 CR Agent"},
-                  template: $color
-                },
-                elements: [
-                  {tag: "div", fields: [
-                    {is_short: true, text: {tag: "lark_md", content: ("**仓库**\n" + $repo)}},
-                    {is_short: true, text: {tag: "lark_md", content: ("**提交人**\n" + $author)}}
-                  ]},
-                  {tag: "div", fields: [
-                    {is_short: true, text: {tag: "lark_md", content: ("**PR**\n#" + $number + " " + $title)}},
-                    {is_short: true, text: {tag: "lark_md", content: ("**变更**\n+" + $adds + " -" + $dels + "（" + $files + " 个文件）")}}
-                  ]},
-                  {tag: "hr"},
-                  {tag: "div", text: {tag: "lark_md", content: ("**" + $conclusion + "**\n" + $detail)}}
-                ]
-                + [issues_el[] | select(. != null)]
-                + [{tag: "hr"}]
-                + [{tag: "action", actions: $buttons}]
-              }
-            }')
+            --arg detail "$DETAIL" \
+            '[
+              {tag: "div", fields: [
+                {is_short: true, text: {tag: "lark_md", content: ("**仓库**\n" + $repo)}},
+                {is_short: true, text: {tag: "lark_md", content: ("**提交人**\n" + $author)}}
+              ]},
+              {tag: "div", fields: [
+                {is_short: true, text: {tag: "lark_md", content: ("**PR**\n#" + $number + " " + $title)}},
+                {is_short: true, text: {tag: "lark_md", content: ("**变更**\n+" + $adds + " -" + $dels + "（" + $files + " 个文件）")}}
+              ]},
+              {tag: "hr"},
+              {tag: "div", text: {tag: "lark_md", content: ("**" + $conclusion + "**\n" + $detail)}}
+            ]' > "$ELEMENTS_FILE"
+
+          # 如果有问题摘要，追加到 elements
+          if [ -n "$SUMMARY_LINES" ]; then
+            UPDATED=$(jq --arg summary "$SUMMARY_LINES" \
+              '. + [{tag: "div", text: {tag: "lark_md", content: $summary}}]' "$ELEMENTS_FILE")
+            echo "$UPDATED" > "$ELEMENTS_FILE"
+          fi
+
+          # 追加分隔线和按钮
+          if [ "$CARD_COLOR" = "red" ]; then
+            UPDATED=$(jq --arg url "$PR_URL" \
+              '. + [
+                {tag: "hr"},
+                {tag: "action", actions: [
+                  {tag: "button", text: {tag: "plain_text", content: "查看 PR"}, type: "default", url: $url},
+                  {tag: "button", text: {tag: "plain_text", content: "前往审批"}, type: "primary", url: ($url + "/files")}
+                ]}
+              ]' "$ELEMENTS_FILE")
+          else
+            UPDATED=$(jq --arg url "$PR_URL" \
+              '. + [
+                {tag: "hr"},
+                {tag: "action", actions: [
+                  {tag: "button", text: {tag: "plain_text", content: "查看 PR"}, type: "primary", url: $url}
+                ]}
+              ]' "$ELEMENTS_FILE")
+          fi
+          echo "$UPDATED" > "$ELEMENTS_FILE"
+
+          # 组装完整卡片
+          CARD=$(jq -n --arg color "$CARD_COLOR" --slurpfile elements "$ELEMENTS_FILE" '{
+            msg_type: "interactive",
+            card: {
+              header: {
+                title: {tag: "plain_text", content: "🦞 龙虾 CR Agent"},
+                template: $color
+              },
+              elements: $elements[0]
+            }
+          }')
+
+          rm -f "$ELEMENTS_FILE"
 
           # 发送到飞书（3 次重试）
           for i in 1 2 3; do
