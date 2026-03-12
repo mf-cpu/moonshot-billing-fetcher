@@ -1,0 +1,65 @@
+name: "🦞 飞书审查通知"
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.review.user.type == 'Bot' &&
+      github.event.review.state != 'pending'
+    steps:
+      - name: Send Feishu Notification
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          REPO="${{ github.repository }}"
+          REVIEW_STATE="${{ github.event.review.state }}"
+          ADDITIONS="${{ github.event.pull_request.additions }}"
+          DELETIONS="${{ github.event.pull_request.deletions }}"
+          CHANGED_FILES="${{ github.event.pull_request.changed_files }}"
+
+          case "$REVIEW_STATE" in
+            approved)          STATE_TEXT="✅ 通过" ;;
+            changes_requested) STATE_TEXT="🔴 需要修改" ;;
+            commented)         STATE_TEXT="💬 已审查" ;;
+            *)                 STATE_TEXT="📋 已审查" ;;
+          esac
+
+          CARD='{
+            "msg_type": "interactive",
+            "card": {
+              "header": {
+                "title": {"tag": "plain_text", "content": "🦞 龙虾 CR Agent 审查完成"},
+                "template": "blue"
+              },
+              "elements": [
+                {"tag": "div", "fields": [
+                  {"is_short": true, "text": {"tag": "lark_md", "content": "**仓库**\n'"$REPO"'"}},
+                  {"is_short": true, "text": {"tag": "lark_md", "content": "**提交人**\n'"$PR_AUTHOR"'"}}
+                ]},
+                {"tag": "div", "fields": [
+                  {"is_short": true, "text": {"tag": "lark_md", "content": "**PR**\n#'"$PR_NUMBER"' '"$PR_TITLE"'"}},
+                  {"is_short": true, "text": {"tag": "lark_md", "content": "**结论**\n'"$STATE_TEXT"'"}}
+                ]},
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**变更** +'"$ADDITIONS"' -'"$DELETIONS"'（'"$CHANGED_FILES"' 个文件）"}},
+                {"tag": "hr"},
+                {"tag": "action", "actions": [
+                  {"tag": "button", "text": {"tag": "plain_text", "content": "查看 PR 审查意见"}, "type": "primary", "url": "'"$PR_URL"'"}
+                ]}
+              ]
+            }
+          }'
+
+          if [ -n "$FEISHU_WEBHOOK_URL" ]; then
+            curl -s -X POST "$FEISHU_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "$CARD"
+            echo "飞书通知已发送"
+          fi
