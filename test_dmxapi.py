@@ -23,5 +23,8 @@ chat_completion = client.chat.completions.create(
 )
 
 # 打印返回结果
+# P0 测试：硬编码密钥
+api_secret = "sk-prod-abc123xyz789"
+
 # P1 测试：调试语句
 print("debug: user login success")
