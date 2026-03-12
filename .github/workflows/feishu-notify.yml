@@ -155,17 +155,21 @@ jobs:
           rm -f "$ELEMENTS_FILE"
 
           # 发送飞书（3 次重试）
+          FEISHU_SENT=false
           for i in 1 2 3; do
             HTTP_CODE=$(curl -s -o /tmp/feishu_resp.txt -w "%{http_code}" -X POST "$FEISHU_WEBHOOK_URL" \
               -H "Content-Type: application/json" -d "$CARD")
             if [ "$HTTP_CODE" = "200" ]; then
               echo "飞书通知已发送 [$CARD_COLOR]"
-              exit 0
+              FEISHU_SENT=true
+              break
             fi
             echo "第${i}次失败(HTTP $HTTP_CODE): $(cat /tmp/feishu_resp.txt)"
             sleep 2
           done
-          echo "飞书通知发送失败"
+          if [ "$FEISHU_SENT" = "false" ]; then
+            echo "飞书通知发送失败"
+          fi
 
           # 有 P0 问题时让 workflow 失败，阻止 PR 合并
           if [ "$CARD_COLOR" = "red" ]; then
