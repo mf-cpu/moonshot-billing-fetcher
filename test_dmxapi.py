@@ -22,9 +22,11 @@ chat_completion = client.chat.completions.create(
     model="gpt-5",    #  替换成你先想用的模型全称， 模型全称可以在DMXAPI 模型价格页面找到并复制。
 )
 
-# 打印返回结果
-# P0 测试：硬编码密钥
-api_secret = "sk-prod-abc123xyz789"
+# Bug 1: P0 - SQL 注入
+def get_user(name):
+    query = "SELECT * FROM users WHERE name = '" + name + "'"
+    return db.execute(query)
 
-# P1 测试：调试语句
-print("debug: user login success")
+# Bug 2: P1 - 函数太长 + 注释掉的代码
+# result = old_api.fetch_data()
+# if result: process(result)
