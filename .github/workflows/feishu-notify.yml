@@ -1,0 +1,160 @@
+# Codex 审查完成后发飞书通知
+# 根据审查结果展示三色卡片：绿（通过）/ 黄（通过有建议）/ 红（未通过需审批）
+
+name: "🦞 飞书审查通知"
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.review.user.type == 'Bot' &&
+      github.event.review.state != 'pending'
+    env:
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      GH_TOKEN: ${{ github.token }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      REPO: ${{ github.repository }}
+      REVIEW_ID: ${{ github.event.review.id }}
+      ADDITIONS: ${{ github.event.pull_request.additions }}
+      DELETIONS: ${{ github.event.pull_request.deletions }}
+      CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+    steps:
+      - name: Fetch review comments and build notification
+        run: |
+          if [ -z "$FEISHU_WEBHOOK_URL" ]; then
+            echo "未配置 FEISHU_WEBHOOK_URL，跳过"
+            exit 0
+          fi
+
+          # 获取本次 review 的 inline comments
+          COMMENTS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID/comments" 2>/dev/null || echo "[]")
+          TOTAL=$(echo "$COMMENTS" | jq 'length')
+
+          # 按 P0（必须修复）和 P1（建议修复）分类
+          P0_COMMENTS=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))]')
+          P0_COUNT=$(echo "$P0_COMMENTS" | jq 'length')
+          P1_COUNT=$((TOTAL - P0_COUNT))
+
+          # 生成 P0 问题摘要
+          P0_SUMMARY=""
+          if [ "$P0_COUNT" -gt 0 ]; then
+            P0_SUMMARY=$(echo "$P0_COMMENTS" | jq -r '.[] | "🔴 " + .path + ": " + (.body | split("\n")[0] | gsub("🔴|🚨|\\*\\*"; "") | ltrimstr(" ") | if length > 60 then .[:60] + "..." else . end)')
+          fi
+
+          # 生成 P1 问题摘要
+          P1_COMMENTS=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i") | not)]')
+          P1_SUMMARY=""
+          if [ "$P1_COUNT" -gt 0 ]; then
+            P1_SUMMARY=$(echo "$P1_COMMENTS" | jq -r '.[] | "🟡 " + .path + ": " + (.body | split("\n")[0] | gsub("🟡|\\*\\*"; "") | ltrimstr(" ") | if length > 60 then .[:60] + "..." else . end)')
+          fi
+
+          # 决定卡片颜色和结论
+          if [ "$P0_COUNT" -gt 0 ]; then
+            CARD_COLOR="red"
+            CONCLUSION="❌ Codex 审查结论：未通过"
+            CONCLUSION_DETAIL="发现 ${P0_COUNT} 个必须修复问题，需人工审批才能合并"
+          elif [ "$P1_COUNT" -gt 0 ]; then
+            CARD_COLOR="yellow"
+            CONCLUSION="✅ Codex 审查结论：通过（有 ${P1_COUNT} 条建议）"
+            CONCLUSION_DETAIL="无必须修复问题，以下建议供参考"
+          else
+            CARD_COLOR="green"
+            CONCLUSION="✅ Codex 审查结论：通过"
+            CONCLUSION_DETAIL="未发现问题，可直接合并"
+          fi
+
+          # 合并问题摘要
+          ALL_SUMMARY=""
+          if [ -n "$P0_SUMMARY" ]; then
+            ALL_SUMMARY="$P0_SUMMARY"
+          fi
+          if [ -n "$P1_SUMMARY" ]; then
+            if [ -n "$ALL_SUMMARY" ]; then
+              ALL_SUMMARY="${ALL_SUMMARY}\n${P1_SUMMARY}"
+            else
+              ALL_SUMMARY="$P1_SUMMARY"
+            fi
+          fi
+
+          SAFE_TITLE=$(echo "$PR_TITLE" | jq -Rs '.')
+
+          # 构建问题详情区块（如果有问题的话）
+          ISSUES_ELEMENT=""
+          if [ -n "$ALL_SUMMARY" ]; then
+            SAFE_SUMMARY=$(printf '%s' "$ALL_SUMMARY" | jq -Rs '.')
+            ISSUES_ELEMENT=',{"tag":"div","text":{"tag":"lark_md","content":'"$SAFE_SUMMARY"'}}'
+          fi
+
+          # 构建按钮（红卡多一个"前往审批"按钮）
+          if [ "$CARD_COLOR" = "red" ]; then
+            BUTTONS='[{"tag":"button","text":{"tag":"plain_text","content":"查看 PR"},"type":"default","url":"'"$PR_URL"'"},{"tag":"button","text":{"tag":"plain_text","content":"前往审批"},"type":"primary","url":"'"$PR_URL"'/files"}]'
+          else
+            BUTTONS='[{"tag":"button","text":{"tag":"plain_text","content":"查看 PR"},"type":"primary","url":"'"$PR_URL"'"}]'
+          fi
+
+          # 构建完整卡片 JSON
+          CARD=$(jq -n \
+            --arg color "$CARD_COLOR" \
+            --arg repo "$REPO" \
+            --arg author "$PR_AUTHOR" \
+            --arg number "$PR_NUMBER" \
+            --argjson title "$SAFE_TITLE" \
+            --arg adds "$ADDITIONS" \
+            --arg dels "$DELETIONS" \
+            --arg files "$CHANGED_FILES" \
+            --arg conclusion "$CONCLUSION" \
+            --arg detail "$CONCLUSION_DETAIL" \
+            --argjson buttons "$BUTTONS" \
+            --argjson issues_el "[$ISSUES_ELEMENT]" \
+            '{
+              msg_type: "interactive",
+              card: {
+                header: {
+                  title: {tag: "plain_text", content: "🦞 龙虾 CR Agent"},
+                  template: $color
+                },
+                elements: [
+                  {tag: "div", fields: [
+                    {is_short: true, text: {tag: "lark_md", content: ("**仓库**\n" + $repo)}},
+                    {is_short: true, text: {tag: "lark_md", content: ("**提交人**\n" + $author)}}
+                  ]},
+                  {tag: "div", fields: [
+                    {is_short: true, text: {tag: "lark_md", content: ("**PR**\n#" + $number + " " + $title)}},
+                    {is_short: true, text: {tag: "lark_md", content: ("**变更**\n+" + $adds + " -" + $dels + "（" + $files + " 个文件）")}}
+                  ]},
+                  {tag: "hr"},
+                  {tag: "div", text: {tag: "lark_md", content: ("**" + $conclusion + "**\n" + $detail)}}
+                ]
+                + [issues_el[] | select(. != null)]
+                + [{tag: "hr"}]
+                + [{tag: "action", actions: $buttons}]
+              }
+            }')
+
+          # 发送到飞书（3 次重试）
+          for i in 1 2 3; do
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$FEISHU_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "$CARD")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | head -n -1)
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "飞书通知已发送 [$CARD_COLOR] P0=$P0_COUNT P1=$P1_COUNT"
+              exit 0
+            fi
+            echo "第 ${i} 次发送失败 (HTTP $HTTP_CODE): $BODY"
+            sleep 2
+          done
+          echo "飞书通知发送失败，已重试 3 次"
+          exit 1
