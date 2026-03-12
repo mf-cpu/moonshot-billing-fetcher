@@ -24,3 +24,4 @@ chat_completion = client.chat.completions.create(
 
 # 打印返回结果
 print(chat_completion)
+api_secret = "sk-prod-abc123xyz789"
