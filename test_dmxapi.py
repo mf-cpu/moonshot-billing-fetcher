@@ -22,11 +22,16 @@ chat_completion = client.chat.completions.create(
     model="gpt-5",    #  替换成你先想用的模型全称， 模型全称可以在DMXAPI 模型价格页面找到并复制。
 )
 
-# Bug 1: P0 - SQL 注入
-def get_user(name):
-    query = "SELECT * FROM users WHERE name = '" + name + "'"
-    return db.execute(query)
+# Bug: P0 - 硬编码密钥
+API_SECRET = "sk-prod-abc123xyz456"
+def call_api(endpoint):
+    headers = {"Authorization": "Bearer " + API_SECRET}
+    return requests.get(endpoint, headers=headers)
 
-# Bug 2: P1 - 函数太长 + 注释掉的代码
-# result = old_api.fetch_data()
-# if result: process(result)
+# Bug: P1 - N+1 查询
+def get_all_user_emails(user_ids):
+    emails = []
+    for uid in user_ids:
+        result = db.execute("SELECT email FROM users WHERE id = %s", (uid,))
+        emails.append(result)
+    return emails
