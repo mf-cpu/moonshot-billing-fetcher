@@ -24,6 +24,3 @@ chat_completion = client.chat.completions.create(
 
 # 打印返回结果
 print(chat_completion)
-# 测试 AI 审查
-secret_key = "my-secret-key-12345"
-db_password = "root123456"
