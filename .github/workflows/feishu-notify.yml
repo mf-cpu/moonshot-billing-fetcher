@@ -14,17 +14,16 @@ jobs:
       - name: Send Feishu Notification
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPO: ${{ github.repository }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          ADDITIONS: ${{ github.event.pull_request.additions }}
+          DELETIONS: ${{ github.event.pull_request.deletions }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
         run: |
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          PR_URL="${{ github.event.pull_request.html_url }}"
-          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
-          REPO="${{ github.repository }}"
-          REVIEW_STATE="${{ github.event.review.state }}"
-          ADDITIONS="${{ github.event.pull_request.additions }}"
-          DELETIONS="${{ github.event.pull_request.deletions }}"
-          CHANGED_FILES="${{ github.event.pull_request.changed_files }}"
-
           case "$REVIEW_STATE" in
             approved)          STATE_TEXT="✅ 通过" ;;
             changes_requested) STATE_TEXT="🔴 需要修改" ;;
@@ -32,34 +31,61 @@ jobs:
             *)                 STATE_TEXT="📋 已审查" ;;
           esac
 
-          CARD='{
-            "msg_type": "interactive",
-            "card": {
-              "header": {
-                "title": {"tag": "plain_text", "content": "🦞 龙虾 CR Agent 审查完成"},
-                "template": "blue"
-              },
-              "elements": [
-                {"tag": "div", "fields": [
-                  {"is_short": true, "text": {"tag": "lark_md", "content": "**仓库**\n'"$REPO"'"}},
-                  {"is_short": true, "text": {"tag": "lark_md", "content": "**提交人**\n'"$PR_AUTHOR"'"}}
-                ]},
-                {"tag": "div", "fields": [
-                  {"is_short": true, "text": {"tag": "lark_md", "content": "**PR**\n#'"$PR_NUMBER"' '"$PR_TITLE"'"}},
-                  {"is_short": true, "text": {"tag": "lark_md", "content": "**结论**\n'"$STATE_TEXT"'"}}
-                ]},
-                {"tag": "div", "text": {"tag": "lark_md", "content": "**变更** +'"$ADDITIONS"' -'"$DELETIONS"'（'"$CHANGED_FILES"' 个文件）"}},
-                {"tag": "hr"},
-                {"tag": "action", "actions": [
-                  {"tag": "button", "text": {"tag": "plain_text", "content": "查看 PR 审查意见"}, "type": "primary", "url": "'"$PR_URL"'"}
-                ]}
-              ]
-            }
-          }'
+          SAFE_TITLE=$(echo "$PR_TITLE" | jq -Rs '.')
 
-          if [ -n "$FEISHU_WEBHOOK_URL" ]; then
-            curl -s -X POST "$FEISHU_WEBHOOK_URL" \
-              -H "Content-Type: application/json" \
-              -d "$CARD"
-            echo "飞书通知已发送"
+          CARD=$(jq -n \
+            --arg repo "$REPO" \
+            --arg author "$PR_AUTHOR" \
+            --arg number "$PR_NUMBER" \
+            --argjson title "$SAFE_TITLE" \
+            --arg state "$STATE_TEXT" \
+            --arg adds "$ADDITIONS" \
+            --arg dels "$DELETIONS" \
+            --arg files "$CHANGED_FILES" \
+            --arg url "$PR_URL" \
+            '{
+              msg_type: "interactive",
+              card: {
+                header: {
+                  title: {tag: "plain_text", content: "🦞 龙虾 CR Agent 审查完成"},
+                  template: "blue"
+                },
+                elements: [
+                  {tag: "div", fields: [
+                    {is_short: true, text: {tag: "lark_md", content: ("**仓库**\n" + $repo)}},
+                    {is_short: true, text: {tag: "lark_md", content: ("**提交人**\n" + $author)}}
+                  ]},
+                  {tag: "div", fields: [
+                    {is_short: true, text: {tag: "lark_md", content: ("**PR**\n#" + $number + " " + $title)}},
+                    {is_short: true, text: {tag: "lark_md", content: ("**结论**\n" + $state)}}
+                  ]},
+                  {tag: "div", text: {tag: "lark_md", content: ("**变更** +" + $adds + " -" + $dels + "（" + $files + " 个文件）")}},
+                  {tag: "hr"},
+                  {tag: "action", actions: [
+                    {tag: "button", text: {tag: "plain_text", content: "查看 PR 审查意见"}, type: "primary", url: $url}
+                  ]}
+                ]
+              }
+            }')
+
+          if [ -z "$FEISHU_WEBHOOK_URL" ]; then
+            echo "⚠️ 未配置 FEISHU_WEBHOOK_URL，跳过"
+            exit 0
           fi
+
+          for i in 1 2 3; do
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$FEISHU_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "$CARD")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | head -n -1)
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "飞书通知已发送"
+              exit 0
+            fi
+            echo "第 ${i} 次发送失败 (HTTP $HTTP_CODE): $BODY"
+            sleep 2
+          done
+          echo "飞书通知发送失败，已重试 3 次"
+          exit 1
