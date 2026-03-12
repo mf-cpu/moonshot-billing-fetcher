@@ -22,11 +22,6 @@ chat_completion = client.chat.completions.create(
     model="gpt-5",    #  替换成你先想用的模型全称， 模型全称可以在DMXAPI 模型价格页面找到并复制。
 )
 
-# Bug: P0 - 硬编码密钥
-API_SECRET = "sk-prod-abc123xyz456"
-def call_api(endpoint):
-    headers = {"Authorization": "Bearer " + API_SECRET}
-    return requests.get(endpoint, headers=headers)
 
 # Bug: P1 - N+1 查询
 def get_all_user_emails(user_ids):
