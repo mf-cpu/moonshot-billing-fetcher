@@ -25,9 +25,6 @@ jobs:
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       REPO: ${{ github.repository }}
       REVIEW_ID: ${{ github.event.review.id }}
-      ADDITIONS: ${{ github.event.pull_request.additions }}
-      DELETIONS: ${{ github.event.pull_request.deletions }}
-      CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
     steps:
       - name: Fetch review comments and build notification
         run: |
@@ -35,6 +32,12 @@ jobs:
             echo "未配置 FEISHU_WEBHOOK_URL，跳过"
             exit 0
           fi
+
+          # 通过 API 获取 PR 详情（确保拿到变更数据）
+          PR_DATA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null || echo "{}")
+          ADDITIONS=$(echo "$PR_DATA" | jq -r '.additions // 0')
+          DELETIONS=$(echo "$PR_DATA" | jq -r '.deletions // 0')
+          CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.changed_files // 0')
 
           # 获取本次 review 的 inline comments
           COMMENTS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID/comments" 2>/dev/null || echo "[]")
@@ -44,18 +47,31 @@ jobs:
           P0_COUNT=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))] | length')
           P1_COUNT=$((TOTAL - P0_COUNT))
 
-          # 生成问题摘要（最多显示 5 条）
+          # 提取问题摘要：去掉 markdown 图片/badge，取第一行有意义的文字
+          extract_summary() {
+            echo "$1" | jq -r "$2"' | .[:5][] |
+              "'"$3"'" + .path + ": " + (
+                .body
+                | split("\n")
+                | map(select(test("^\\s*$|^!\\[|https?://img\\.shields") | not))
+                | map(gsub("[*🔴🚨🟡#]"; "") | ltrimstr(" ") | rtrimstr(" "))
+                | map(select(length > 0))
+                | if length > 0 then .[0] else "查看详情" end
+                | if length > 60 then .[:60] + "..." else . end
+              )'
+          }
+
           SUMMARY_LINES=""
           if [ "$P0_COUNT" -gt 0 ]; then
-            P0_TEXT=$(echo "$COMMENTS" | jq -r '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))] | .[:5][] | "🔴 " + .path + ": " + (.body | split("\n")[0] | gsub("[*🔴🚨]"; "") | ltrimstr(" ") | if length > 50 then .[:50] + "..." else . end)')
+            P0_TEXT=$(extract_summary "$COMMENTS" '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i"))]' '🔴 ')
             SUMMARY_LINES="$P0_TEXT"
           fi
           if [ "$P1_COUNT" -gt 0 ]; then
-            P1_TEXT=$(echo "$COMMENTS" | jq -r '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i") | not)] | .[:3][] | "🟡 " + .path + ": " + (.body | split("\n")[0] | gsub("[*🟡]"; "") | ltrimstr(" ") | if length > 50 then .[:50] + "..." else . end)')
-            if [ -n "$SUMMARY_LINES" ]; then
-              SUMMARY_LINES="$SUMMARY_LINES
-          $P1_TEXT"
-            else
+            P1_TEXT=$(extract_summary "$COMMENTS" '[.[] | select(.body | test("🔴|必须修复|P0|critical"; "i") | not)]' '🟡 ')
+            if [ -n "$SUMMARY_LINES" ] && [ -n "$P1_TEXT" ]; then
+              SUMMARY_LINES="${SUMMARY_LINES}
+${P1_TEXT}"
+            elif [ -n "$P1_TEXT" ]; then
               SUMMARY_LINES="$P1_TEXT"
             fi
           fi
@@ -76,11 +92,11 @@ jobs:
           fi
 
           echo "卡片颜色: $CARD_COLOR, P0=$P0_COUNT, P1=$P1_COUNT"
+          echo "变更: +$ADDITIONS -$DELETIONS ($CHANGED_FILES files)"
 
           # 构建 elements 数组写入临时文件
           ELEMENTS_FILE=$(mktemp)
 
-          # 基础信息
           jq -n \
             --arg repo "$REPO" \
             --arg author "$PR_AUTHOR" \
