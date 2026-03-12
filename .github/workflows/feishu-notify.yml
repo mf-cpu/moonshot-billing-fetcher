@@ -1,7 +1,7 @@
 # Codex 审查完成后发飞书通知
 # 三色卡片：绿（通过）/ 黄（通过有建议）/ 红（未通过需审批）
 
-name: "🦞 飞书审查通知"
+name: "Codex Review"
 
 on:
   pull_request_review:
@@ -148,22 +148,11 @@ jobs:
           CARD=$(jq -n --arg color "$CARD_COLOR" --slurpfile el "$ELEMENTS_FILE" '{
             msg_type:"interactive",
             card:{
-              header:{title:{tag:"plain_text",content:"🦞 龙虾 CR Agent"},template:$color},
+              header:{title:{tag:"plain_text",content:"Codex Review"},template:$color},
               elements:$el[0]
             }
           }')
           rm -f "$ELEMENTS_FILE"
-
-          # 没有 P0 时自动 approve PR
-          if [ "$CARD_COLOR" != "red" ]; then
-            echo "无 P0 问题，自动 approve PR"
-            gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-              -f event="APPROVE" \
-              -f body="🦞 龙虾 CR Agent：Codex 审查通过，自动批准。" \
-              2>/dev/null && echo "自动 approve 成功" || echo "自动 approve 失败（可忽略）"
-          else
-            echo "有 P0 问题，需人工审批"
-          fi
 
           # 发送飞书（3 次重试）
           for i in 1 2 3; do
@@ -177,4 +166,9 @@ jobs:
             sleep 2
           done
           echo "飞书通知发送失败"
-          exit 1
+
+          # 有 P0 问题时让 workflow 失败，阻止 PR 合并
+          if [ "$CARD_COLOR" = "red" ]; then
+            echo "::error::Codex Review 未通过：发现 ${P0_COUNT} 个 P0 问题，需人工 bypass 才能合并"
+            exit 1
+          fi
